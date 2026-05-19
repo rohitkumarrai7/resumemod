@@ -1,0 +1,117 @@
+{
+  "manifest_version": 3,
+  "name": "ResumeForge — ATS Optimizer",
+  "version": "2.0.0",
+  "description": "Instantly tailor your resume to any job posting. One-click LaTeX optimization.",
+  "action": { "default_title": "ResumeForge" },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs",
+    "identity"
+  ],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "https://canny-woodpecker-211.convex.site/*",
+    "https://canny-woodpecker-211.convex.cloud/*",
+    "https://stoic-caiman-320.convex.site/*",
+    "https://stoic-caiman-320.convex.cloud/*",
+    "https://www.linkedin.com/*",
+    "https://*.linkedin.com/*",
+    "https://internshala.com/*",
+    "https://*.internshala.com/*",
+    "https://www.naukri.com/*",
+    "https://*.naukri.com/*",
+    "https://www.indeed.com/*",
+    "https://*.indeed.com/*",
+    "https://www.glassdoor.com/*",
+    "https://*.glassdoor.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://localhost:8000 https://canny-woodpecker-211.convex.site https://canny-woodpecker-211.convex.cloud https://stoic-caiman-320.convex.site https://stoic-caiman-320.convex.cloud http://localhost:3000 https://unpkg.com"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "content/extract-common.js",
+        "content/detector.js",
+        "content/universal-extractor.js",
+        "content/floating-button.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.linkedin.com/*",
+        "https://*.linkedin.com/*"
+      ],
+      "js": [
+        "content/linkedin.js",
+        "content/linkedin-profile.js",
+        "content/sidebar.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://internshala.com/*",
+        "https://*.internshala.com/*"
+      ],
+      "js": [
+        "content/internshala.js",
+        "content/sidebar.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.naukri.com/*",
+        "https://*.naukri.com/*"
+      ],
+      "js": [
+        "content/naukri.js",
+        "content/sidebar.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.indeed.com/*",
+        "https://*.indeed.com/*"
+      ],
+      "js": [
+        "content/indeed.js",
+        "content/sidebar.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.glassdoor.com/*",
+        "https://*.glassdoor.com/*"
+      ],
+      "js": [
+        "content/glassdoor.js",
+        "content/sidebar.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["callback.html", "callback.js", "content/pdf.min.js", "content/pdf.worker.min.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
