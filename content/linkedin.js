@@ -56,6 +56,13 @@
     '[class*="company-name"]'
   ];
 
+  const LOCATION_SELECTORS = [
+    ".job-details-jobs-unified-top-card__bullet",
+    ".jobs-unified-top-card__bullet",
+    ".topcard__flavor--bullet",
+    '[class*="location"]'
+  ];
+
   E.registerSite("linkedin", async () => {
     const jdEl = await E.waitFor(JD_SELECTORS, 6000);
     if (!jdEl) {
@@ -63,6 +70,7 @@
         jobDescription: "",
         jobTitle: "",
         company: "",
+        location: "",
         error:
           "Couldn't find a job description on this LinkedIn page. Open a job (e.g. from the recommended list or a /jobs/view/... URL), wait a moment for it to load, then try again."
       };
@@ -70,7 +78,8 @@
     return {
       jobDescription: E.text(jdEl),
       jobTitle: E.text(E.firstMatch(TITLE_SELECTORS)),
-      company: E.text(E.firstMatch(COMPANY_SELECTORS))
+      company: E.text(E.firstMatch(COMPANY_SELECTORS)),
+      location: E.text(E.firstMatch(LOCATION_SELECTORS)) || ""
     };
   });
 })();

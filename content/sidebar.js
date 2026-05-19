@@ -409,6 +409,7 @@
         size: file.size,
         base64: base64,
         textPreview: textPreview,
+        extractedText: textPreview,
         uploadedAt: Date.now(),
         label: file.name.replace(/\.[^/.]+$/, ""),
         isDefault: resumes.length === 0

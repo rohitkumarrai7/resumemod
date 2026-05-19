@@ -34,6 +34,12 @@
     'a[class*="comp-name"]'
   ];
 
+  const LOCATION_SELECTORS = [
+    '[class*="location"]',
+    '[class*="place"]',
+    ".nI-gNb-salaryInfo"
+  ];
+
   E.registerSite("naukri", async () => {
     const jdEl = await E.waitFor(JD_SELECTORS, 3500);
     if (!jdEl) {
@@ -41,6 +47,7 @@
         jobDescription: "",
         jobTitle: "",
         company: "",
+        location: "",
         error:
           "Couldn't find a job description on this Naukri page. Open a job detail page and try again."
       };
@@ -48,7 +55,8 @@
     return {
       jobDescription: E.text(jdEl),
       jobTitle: E.text(E.firstMatch(TITLE_SELECTORS)),
-      company: E.text(E.firstMatch(COMPANY_SELECTORS))
+      company: E.text(E.firstMatch(COMPANY_SELECTORS)),
+      location: E.text(E.firstMatch(LOCATION_SELECTORS)) || ""
     };
   });
 })();
