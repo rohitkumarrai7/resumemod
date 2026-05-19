@@ -384,9 +384,9 @@
         try { textPreview = (await file.text()).slice(0, 20000); } catch (e) { }
       } else if ((file.type && file.type === "application/pdf") || /\.pdf$/i.test(file.name)) {
         try {
-          textPreview = await extractTextFromPdfClient(base64);
-          if (textPreview && textPreview.length > 30) {
-            textPreview = textPreview.slice(0, 20000);
+          var fullExtractedText = await extractTextFromPdfClient(base64);
+          if (fullExtractedText && fullExtractedText.length > 30) {
+            textPreview = fullExtractedText.slice(0, 20000);
           } else {
             showError("No text found in PDF. It may be a scanned document or image-based PDF. Please upload a text-based PDF.");
             fileInput.value = "";
@@ -409,7 +409,7 @@
         size: file.size,
         base64: base64,
         textPreview: textPreview,
-        extractedText: textPreview,
+        extractedText: fullExtractedText || textPreview,
         uploadedAt: Date.now(),
         label: file.name.replace(/\.[^/.]+$/, ""),
         isDefault: resumes.length === 0
@@ -533,17 +533,33 @@ if ((file.type && file.type.startsWith("text/")) || /\.txt$/i.test(file.name)) {
         script.onload = function() {
           console.log("[ResumeForge] pdf.min.js script loaded");
           var waitCount = 0;
+          var maxWait = 200; // 10 seconds instead of 2.5s
+
           var waitForIt = function() {
-            if (window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions) {
-              console.log("[ResumeForge] pdfjsLib found on window, setting workerSrc");
-              window.pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("lib/pdfjs/pdf.worker.min.js");
-              console.log("[ResumeForge] workerSrc set to:", chrome.runtime.getURL("lib/pdfjs/pdf.worker.min.js"));
-              resolve(window.pdfjsLib);
+            var lib = window.pdfjsLib || window.pdfjsDistBuild || window.PDFJS || window.pdfjs;
+
+            if (lib && lib.getDocument) {
+              console.log("[ResumeForge] pdfjsLib found on window after " + (waitCount * 50) + "ms");
+              window.pdfjsLib = lib;
+              if (lib.GlobalWorkerOptions) {
+                lib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("lib/pdfjs/pdf.worker.min.js");
+              }
+              resolve(lib);
               return;
             }
+
+            if (waitCount % 20 === 0 && waitCount > 0) {
+              var pdfKeys = Object.keys(window).filter(function(k) {
+                return k.toLowerCase().includes('pdf');
+              });
+              console.log("[ResumeForge] Window keys containing 'pdf':", pdfKeys);
+            }
+
             waitCount++;
-            if (waitCount > 50) {
-              reject(new Error("pdfjsLib not defined after 2.5s"));
+            if (waitCount > maxWait) {
+              console.error("[ResumeForge] pdfjsLib not found after 10s");
+              console.log("[ResumeForge] All window keys:", Object.keys(window).slice(0, 50));
+              reject(new Error("pdfjsLib not defined after 10s"));
               return;
             }
             setTimeout(waitForIt, 50);
@@ -922,51 +938,49 @@ if ((file.type && file.type.startsWith("text/")) || /\.txt$/i.test(file.name)) {
         throw new Error("Could not read job description. Paste it in the text area and try again.");
       }
 
-      var textPreview = resume.textPreview || "";
+      var resumeToSend = resume.extractedText || resume.textPreview || "";
       var isPdf = resume.mimeType === "application/pdf" || /\.pdf$/i.test(resume.filename || "");
-      var isGarbage = textPreview.trim().startsWith("%PDF") || textPreview.includes("PDF-1.");
+      console.log("[ResumeForge] Stored extractedText length:", resume.extractedText ? resume.extractedText.length : 0);
+      console.log("[ResumeForge] Stored textPreview length:", resume.textPreview ? resume.textPreview.length : 0);
+      console.log("[ResumeForge] resumeToSend length:", resumeToSend.length);
 
-      if ((!textPreview || isGarbage) && isPdf && resume.base64) {
-        console.log("Retrying PDF text extraction in onOptimizeResume...");
+      var isValidText = resumeToSend.length > 100 &&
+        !resumeToSend.startsWith("%PDF") &&
+        !resumeToSend.includes("PDF-1.") &&
+        !resumeToSend.includes("/Linearized") &&
+        !resumeToSend.startsWith("[PDF");
+
+      if (!isValidText && isPdf && resume.base64) {
+        console.log("[ResumeForge] Stored text invalid, trying re-extraction...");
         try {
           var extractedText = await extractTextFromPdfClient(resume.base64);
-          if (extractedText && extractedText.length > 30) {
-            textPreview = extractedText.slice(0, 20000);
-            console.log("Successfully extracted", textPreview.length, "chars from PDF");
+          if (extractedText && extractedText.length > 100) {
+            resumeToSend = extractedText;
+            resume.extractedText = extractedText;
+            resume.textPreview = extractedText.slice(0, 20000);
+            var storedR = await chrome.storage.local.get([STORAGE.resumes]);
+            var resumesR = storedR[STORAGE.resumes] || [];
+            var idx = resumesR.findIndex(function(r) { return r.id === resume.id; });
+            if (idx >= 0) {
+              resumesR[idx] = resume;
+              await chrome.storage.local.set({ rf_resumes: resumesR });
+            }
+            console.log("[ResumeForge] Re-extraction success:", extractedText.length, "chars");
           }
         } catch (e) {
-          console.error("PDF re-extraction failed:", e);
+          console.error("[ResumeForge] Re-extraction failed:", e);
         }
       }
 
-      if (textPreview && (textPreview.startsWith("%PDF") || textPreview.includes("PDF-1.") || textPreview.includes("/Linearized") || textPreview.includes("endobj"))) {
-        textPreview = "";
+      if (!resumeToSend || resumeToSend.length < 50) {
+        console.error("[ResumeForge] No valid text available");
+        showError("Could not extract text from resume. Please upload a text-based PDF or TXT file.");
+        btn.disabled = false;
+        btn.querySelector(".btn-label").textContent = "Optimize Resume";
+        return;
       }
 
-      var resumeToSend = "";
-      if (textPreview && textPreview.length > 50 && !textPreview.startsWith("%PDF") && !textPreview.includes("PDF-1.") && !textPreview.includes("/Linearized") && !textPreview.startsWith("[PDF")) {
-        var binaryCount = (textPreview.match(/[^\x20-\x7E\t\n\r]/g) || []).length;
-        var binaryRatio = binaryCount / textPreview.length;
-        if (binaryRatio < 0.15) {
-          resumeToSend = textPreview;
-        }
-      }
-
-      if (!resumeToSend && resume.base64 && !isPdf) {
-        try {
-          var decoded = atob(resume.base64.slice(0, 50000));
-          var isValidText = decoded.length > 50 && decoded.length < 1000000 && !decoded.startsWith("%PDF");
-          if (isValidText) {
-            resumeToSend = decoded.slice(0, 20000);
-          }
-        } catch (e) {
-          console.error("Base64 decode error:", e);
-        }
-      }
-
-      if (!resumeToSend && isPdf && resume.base64) {
-        resumeToSend = "[PDF resume uploaded - " + (resume.filename || "document") + ". PDF text extraction failed. Please upload a text-based resume (.txt, .docx) for better results.]";
-      }
+      console.log("[ResumeForge] Final resumeToSend length:", resumeToSend.length);
 
       var resp = await sendRuntime({
         type: "CREATE_DRAFT",
