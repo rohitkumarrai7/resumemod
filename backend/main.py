@@ -85,6 +85,34 @@ class ExtractTextResponse(BaseModel):
     confidence: float
 
 
+def is_human_readable(text: str) -> bool:
+    """Validate text is human-readable, not binary garbage"""
+    if not text or len(text) < 50:
+        return False
+
+    pdf_markers = ['%PDF-', 'obj <<', 'endobj', 'stream', 'endstream',
+                   '/Type/', '/Font', '/Image', '/Length', '/Filter',
+                   'FlateDecode', 'xref', 'trailer', 'startxref']
+    if any(marker in text for marker in pdf_markers):
+        return False
+
+    printable = sum(1 for c in text if 32 <= ord(c) <= 126 or c in '\n\r\t')
+    if printable / len(text) < 0.85:
+        return False
+
+    resume_keywords = ['experience', 'education', 'skills', 'work',
+                       'developer', 'engineer', 'project', 'university',
+                       'summary', 'objective', 'professional', 'javascript',
+                       'python', 'react', 'node', 'full stack']
+    lower = text.lower()
+    if not any(kw in lower for kw in resume_keywords):
+        words = text.split()
+        if len(words) < 20:
+            return False
+
+    return True
+
+
 def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> Dict[str, Any]:
     text = ""
     method = "none"
@@ -102,6 +130,9 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> Dict[str, Any]:
                     text = "\n".join(pages_text)
                     method = "pdfplumber"
                     confidence = min(1.0, len(text) / 1000)
+                    if is_human_readable(text):
+                        return {"text": text, "method": method, "confidence": confidence}
+                    text = ""
         except Exception as e:
             print(f"pdfplumber failed: {e}")
 
@@ -115,6 +146,9 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> Dict[str, Any]:
             if text.strip():
                 method = "pymupdf"
                 confidence = min(1.0, len(text) / 1000)
+                if is_human_readable(text):
+                    return {"text": text, "method": method, "confidence": confidence}
+                text = ""
         except Exception as e:
             print(f"pymupdf failed: {e}")
 
@@ -129,6 +163,8 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> Dict[str, Any]:
             if text.strip():
                 method = "basic"
                 confidence = 0.3
+                if is_human_readable(text):
+                    return {"text": text, "method": method, "confidence": confidence}
         except Exception as e:
             print(f"basic extraction failed: {e}")
 
@@ -140,11 +176,18 @@ async def extract_text_from_pdf_endpoint(request: ExtractTextRequest):
     try:
         pdf_bytes = base64.b64decode(request.base64)
         result = extract_text_from_pdf_bytes(pdf_bytes)
+
+        if not result["text"] or not is_human_readable(result["text"]):
+            raise HTTPException(422, "Could not extract readable text from PDF. "
+                                    "The PDF may be image-based or corrupted.")
+
         return ExtractTextResponse(
             text=result["text"],
             method=result["method"],
             confidence=result["confidence"]
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"PDF extraction failed: {str(e)}")
 
