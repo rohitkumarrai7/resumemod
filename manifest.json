@@ -32,7 +32,7 @@
     "service_worker": "background.js"
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' http://localhost:8000 https://canny-woodpecker-211.convex.site https://canny-woodpecker-211.convex.cloud https://stoic-caiman-320.convex.site https://stoic-caiman-320.convex.cloud http://localhost:3000 https://unpkg.com"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' http://localhost:8000 https://canny-woodpecker-211.convex.site https://canny-woodpecker-211.convex.cloud https://stoic-caiman-320.convex.site https://stoic-caiman-320.convex.cloud http://localhost:3000 https://unpkg.com"
   },
   "content_scripts": [
     {
@@ -110,7 +110,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["callback.html", "callback.js", "content/pdf.min.js", "content/pdf.worker.min.js"],
+      "resources": ["lib/pdfjs/*", "content/pdf.min.js", "content/pdf.worker.min.js", "callback.html", "callback.js"],
       "matches": ["<all_urls>"]
     }
   ]

@@ -461,116 +461,128 @@ if ((file.type && file.type.startsWith("text/")) || /\.txt$/i.test(file.name)) {
       return "";
   }
 
-   var pdfJsLoading = null;
-   var pdfJsLoaded = false;
+   var pdfJsLoadPromise = null;
 
    async function extractTextFromPdfClient(base64) {
        var base64Data = base64.replace(/^data:application\/pdf;base64,/, "");
-       console.log("Starting PDF extraction, base64 length:", base64Data.length);
-
-       var lib = window.pdfjsLib;
-       if (lib) {
-         try {
-           console.log("pdfjsLib found on window, using it");
-           var text = await extractWithPdfJs(base64Data, lib);
-           console.log("Extraction succeeded with window.pdfjsLib");
-           return text;
-         } catch (e) {
-           console.error("Extraction with window.pdfjsLib failed:", e);
-         }
-       }
+       console.log("[ResumeForge] Starting PDF extraction, base64 length:", base64Data.length);
 
        try {
-         console.log("Trying to load pdf.min.js");
-         await loadPdfJsLibrary();
-         console.log("pdf.min.js loaded");
-         pdfJsLoaded = true;
-         lib = window.pdfjsLib;
-         if (lib) {
-           var text = await extractWithPdfJs(base64Data, lib);
-           console.log("Extraction after load succeeded");
+         var pdfLib = await loadPdfJs();
+         console.log("[ResumeForge] PDF.js loaded, processing document...");
+         var text = await extractWithPdfJs(base64Data, pdfLib);
+         if (text && text.length >= 30) {
+           console.log("[ResumeForge] PDF.js extraction SUCCESS:", text.length, "chars");
            return text;
          }
+         throw new Error("PDF text too short or empty");
        } catch (e) {
-         console.error("PDF.js load or extraction failed:", e);
+         console.error("[ResumeForge] PDF.js extraction failed:", e.message);
        }
 
-       console.log("Trying background script");
+       console.log("[ResumeForge] Falling back to server-side extraction...");
        try {
          var resp = await sendRuntime({
            type: "PARSE_PDF",
            payload: { base64: base64Data }
          });
-         console.log("Background response:", resp);
-         if (resp && resp.ok && resp.data && resp.data.text) {
-           if (resp.data.text.length >= 30) {
-             console.log("Background extraction succeeded");
-             return resp.data.text;
-           }
-           throw new Error("No text found in PDF. It may be a scanned document or image-based PDF.");
+         console.log("[ResumeForge] API response:", resp);
+         if (resp && resp.ok && resp.data && resp.data.text && resp.data.text.length >= 30) {
+           console.log("[ResumeForge] API extraction SUCCESS:", resp.data.text.length, "chars");
+           return resp.data.text;
          }
          if (resp && resp.error) {
            throw new Error(resp.error);
          }
        } catch (e) {
-         console.error("Background PDF parsing failed:", e);
+         console.error("[ResumeForge] API PDF parsing failed:", e.message);
        }
 
-       throw new Error("Failed to extract text from PDF. Please try a different file or check your connection.");
+       console.log("[ResumeForge] Trying basic text extraction...");
+       try {
+         var decoded = atob(base64Data);
+         var textMatches = decoded.match(/[ -~]{4,}/g) || [];
+         var basicText = textMatches.join(" ");
+         if (basicText.length > 100) {
+           console.log("[ResumeForge] Basic extraction SUCCESS:", basicText.length, "chars");
+           return basicText;
+         }
+       } catch (e) {
+         console.error("[ResumeForge] Basic extraction failed:", e.message);
+       }
+
+       throw new Error("Failed to extract text from PDF. Please try a different file.");
     }
 
-   function loadPdfJsLibrary() {
-     return new Promise(function(resolve, reject) {
-       if (window.pdfjsLib) {
-         resolve();
-         return;
-       }
-       var script = document.createElement("script");
-       script.src = chrome.runtime.getURL("content/pdf.min.js");
-       script.onload = function() {
-         var waitCount = 0;
-         var waitForIt = function() {
-           if (window.pdfjsLib) {
-             console.log("pdfjsLib available on window");
-             resolve();
-             return;
-           }
-           waitCount++;
-           if (waitCount > 50) {
-             reject(new Error("pdfjsLib not defined after 2.5s"));
-             return;
-           }
-           setTimeout(waitForIt, 50);
-         };
-         waitForIt();
-       };
-       script.onerror = function(e) {
-         reject(new Error("Failed to load pdf.min.js"));
-       };
-       (document.head || document.documentElement).appendChild(script);
-     });
+   function loadPdfJs() {
+     if (pdfJsLoadPromise) {
+       return pdfJsLoadPromise;
+     }
+
+     pdfJsLoadPromise = new Promise(function(resolve, reject) {
+        if (window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions) {
+          console.log("[ResumeForge] pdfjsLib already available, setting workerSrc");
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("lib/pdfjs/pdf.worker.min.js");
+          resolve(window.pdfjsLib);
+          return;
+        }
+
+        console.log("[ResumeForge] Starting PDF.js injection...");
+        var script = document.createElement("script");
+        script.src = chrome.runtime.getURL("lib/pdfjs/pdf.min.js");
+        script.onload = function() {
+          console.log("[ResumeForge] pdf.min.js script loaded");
+          var waitCount = 0;
+          var waitForIt = function() {
+            if (window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions) {
+              console.log("[ResumeForge] pdfjsLib found on window, setting workerSrc");
+              window.pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("lib/pdfjs/pdf.worker.min.js");
+              console.log("[ResumeForge] workerSrc set to:", chrome.runtime.getURL("lib/pdfjs/pdf.worker.min.js"));
+              resolve(window.pdfjsLib);
+              return;
+            }
+            waitCount++;
+            if (waitCount > 50) {
+              reject(new Error("pdfjsLib not defined after 2.5s"));
+              return;
+            }
+            setTimeout(waitForIt, 50);
+          };
+          waitForIt();
+        };
+        script.onerror = function(e) {
+          console.error("[ResumeForge] Failed to load pdf.min.js:", e);
+          pdfJsLoadPromise = null;
+          reject(new Error("Failed to load pdf.min.js"));
+        };
+        (document.head || document.documentElement).appendChild(script);
+        console.log("[ResumeForge] PDF.js script appended to document.head");
+});
+      return pdfJsLoadPromise;
    }
 
    async function extractWithPdfJs(base64Data, lib) {
-      lib = lib || window.pdfjsLib;
-      if (!lib) throw new Error("pdfjsLib not available");
-      var data = uint8ArrayFromBase64(base64Data);
-      console.log("Creating PDF doc with data length:", data.length);
-      var pdf = await lib.getDocument({ data: data }).promise;
-      console.log("PDF loaded, numPages:", pdf.numPages);
-      var fullText = "";
-      for (var i = 1; i <= pdf.numPages; i++) {
-        var page = await pdf.getPage(i);
-        var content = await page.getTextContent();
-        var pageText = content.items.map(function(item) { return item.str || ""; }).join(" ");
-        fullText += pageText + "\n";
-      }
-      console.log("Extracted text length:", fullText.length);
-      if (fullText && fullText.length >= 30) {
-        return fullText;
-      }
-      throw new Error("PDF text too short or empty");
-   }
+       lib = lib || window.pdfjsLib;
+       if (!lib) throw new Error("pdfjsLib not available");
+
+       var data = uint8ArrayFromBase64(base64Data);
+       console.log("[ResumeForge] Creating PDF doc with data length:", data.length);
+
+       var loadingTask = lib.getDocument({ data: data });
+       var pdf = await loadingTask.promise;
+       console.log("[ResumeForge] PDF loaded, pages:", pdf.numPages);
+
+       var fullText = "";
+       for (var i = 1; i <= pdf.numPages; i++) {
+         console.log("[ResumeForge] Extracting page", i);
+         var page = await pdf.getPage(i);
+         var content = await page.getTextContent();
+         var pageText = content.items.map(function(item) { return item.str || ""; }).join(" ");
+         fullText += pageText + "\n";
+       }
+       console.log("[ResumeForge] Total extracted text length:", fullText.length);
+       return fullText;
+    }
 
    function uint8ArrayFromBase64(base64) {
       var binary = atob(base64);
