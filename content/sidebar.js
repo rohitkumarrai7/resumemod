@@ -545,71 +545,56 @@ if ((file.type && file.type.startsWith("text/")) || /\.txt$/i.test(file.name)) {
        throw new Error("Failed to extract text from PDF. Please try a different file.");
     }
 
-   function loadPdfJs() {
-     if (pdfJsLoadPromise) {
-       return pdfJsLoadPromise;
+    async function loadPdfJs() {
+       if (pdfJsLoadPromise) {
+         return pdfJsLoadPromise;
+       }
+
+       pdfJsLoadPromise = new Promise(function(resolve, reject) {
+          if (window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions) {
+            console.log("[ResumeForge] pdfjsLib already available");
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("lib/pdfjs/pdf.worker.min.js");
+            resolve(window.pdfjsLib);
+            return;
+          }
+
+          console.log("[ResumeForge] Starting PDF.js injection...");
+          var script = document.createElement("script");
+          script.src = chrome.runtime.getURL("lib/pdfjs/pdf.min.js");
+          script.onload = function() {
+            console.log("[ResumeForge] pdf.min.js script loaded");
+            console.log("[ResumeForge] window.pdfjsLib:", typeof window.pdfjsLib);
+            console.log("[ResumeForge] globalThis.pdfjsLib:", typeof globalThis.pdfjsLib);
+
+            var lib = window.pdfjsLib || window.pdfjsDistBuild || window.PDFJS || window.pdfjs ||
+                      window["pdfjs-dist/build/pdf"] || globalThis.pdfjsLib || globalThis["pdfjs-dist/build/pdf"];
+
+            if (lib && lib.getDocument) {
+              console.log("[ResumeForge] pdfjsLib found!");
+              window.pdfjsLib = lib;
+              if (lib.GlobalWorkerOptions) {
+                lib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("lib/pdfjs/pdf.worker.min.js");
+              }
+              resolve(lib);
+              return;
+            }
+
+            console.error("[ResumeForge] pdfjsLib not found after script load");
+            console.error("[ResumeForge] globalThis keys:", Object.keys(globalThis).slice(0, 50));
+            reject(new Error("pdfjsLib not defined after script load"));
+          };
+          script.onerror = function(e) {
+            console.error("[ResumeForge] Failed to load pdf.min.js:", e);
+            pdfJsLoadPromise = null;
+            reject(new Error("Failed to load pdf.min.js"));
+          };
+          (document.head || document.documentElement).appendChild(script);
+          console.log("[ResumeForge] PDF.js script appended to document.head");
+        });
+        return pdfJsLoadPromise;
      }
 
-     pdfJsLoadPromise = new Promise(function(resolve, reject) {
-        if (window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions) {
-          console.log("[ResumeForge] pdfjsLib already available, setting workerSrc");
-          window.pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("lib/pdfjs/pdf.worker.min.js");
-          resolve(window.pdfjsLib);
-          return;
-        }
-
-         console.log("[ResumeForge] Starting PDF.js injection...");
-         var script = document.createElement("script");
-         script.src = chrome.runtime.getURL("lib/pdfjs/pdf.js");
-         script.onload = function() {
-           console.log("[ResumeForge] pdf.js script loaded");
-           var waitCount = 0;
-           var maxWait = 200;
-
-           var waitForIt = function() {
-             var lib = window.pdfjsLib || window.pdfjsDistBuild || window.PDFJS || window.pdfjs;
-
-             if (lib && lib.getDocument) {
-               console.log("[ResumeForge] pdfjsLib found on window after " + (waitCount * 50) + "ms");
-               window.pdfjsLib = lib;
-               if (lib.GlobalWorkerOptions) {
-                 lib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("lib/pdfjs/pdf.worker.js");
-               }
-               resolve(lib);
-               return;
-             }
-
-             if (waitCount % 20 === 0 && waitCount > 0) {
-               var pdfKeys = Object.keys(window).filter(function(k) {
-                 return k.toLowerCase().includes('pdf');
-               });
-               console.log("[ResumeForge] Window keys containing 'pdf':", pdfKeys);
-             }
-
-             waitCount++;
-             if (waitCount > maxWait) {
-               console.error("[ResumeForge] pdfjsLib not found after 10s");
-               console.error("[ResumeForge] This usually means the PDF.js build doesn't expose window.pdfjsLib");
-               console.error("[ResumeForge] Make sure you're using the legacy build that sets window.pdfjsLib");
-               reject(new Error("pdfjsLib not defined after 10s"));
-               return;
-             }
-             setTimeout(waitForIt, 50);
-           };
-           waitForIt();
-         };
-        script.onerror = function(e) {
-          console.error("[ResumeForge] Failed to load pdf.min.js:", e);
-          pdfJsLoadPromise = null;
-          reject(new Error("Failed to load pdf.min.js"));
-        };
-        (document.head || document.documentElement).appendChild(script);
-        console.log("[ResumeForge] PDF.js script appended to document.head");
-});
-      return pdfJsLoadPromise;
-   }
-
-   async function extractWithPdfJs(base64Data, lib) {
+    async function extractWithPdfJs(base64Data, lib) {
        lib = lib || window.pdfjsLib;
        if (!lib) throw new Error("pdfjsLib not available");
 
