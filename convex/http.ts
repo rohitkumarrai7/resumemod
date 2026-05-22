@@ -446,6 +446,58 @@ function sectionCompletenessScore(text: string): number {
   return found / patterns.length;
 }
 
+// ─── AI Generate ──────────────────────────────────────────────────────────────
+
+http.route({
+  path: "/v1/ai/generate",
+  method: "POST",
+  handler: httpAction(async (_, request) => {
+    try {
+      const body = await request.json();
+      const messages = body.messages || [];
+      const maxTokens = body.maxTokens || 4096;
+
+      const apiKey = (globalThis as any).process?.env?.OPENAI_API_KEY || "";
+      if (!apiKey) {
+        return jsonResponse(
+          { error: "AI service not configured. Set OPENAI_API_KEY in Convex env.", content: "" },
+          503
+        );
+      }
+
+      const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages,
+          max_tokens: maxTokens,
+          temperature: 0.3,
+        }),
+      });
+
+      if (!openaiRes.ok) {
+        const errBody = await openaiRes.text().catch(() => "");
+        console.error("OpenAI API error:", openaiRes.status, errBody);
+        return jsonResponse(
+          { error: `OpenAI API error: ${openaiRes.status}`, content: "" },
+          502
+        );
+      }
+
+      const data = await openaiRes.json();
+      const content = data.choices?.[0]?.message?.content || "";
+      return jsonResponse({ content, usage: data.usage });
+    } catch (error: any) {
+      console.error("AI generate error:", error);
+      return jsonResponse({ error: error.message, content: "" }, 500);
+    }
+  }),
+});
+
 // ─── PDF Parse ─────────────────────────────────────────────────────────────────
 
 http.route({
@@ -461,13 +513,51 @@ http.route({
       }
 
       const base64Data = base64.replace(/^data:application\/pdf;base64,/, "");
-      const buffer = Buffer.from(base64Data, "base64");
+      const decoded = atob(base64Data);
 
-      const pdfParse = require("pdf-parse");
-      const pdfData = await pdfParse(buffer);
-      const fullText = pdfData.text || "";
+      const parenStrings: string[] = [];
+      const parenRegex = /\(([^)]{2,})\)/g;
+      let match;
+      while ((match = parenRegex.exec(decoded)) !== null) {
+        const str = match[1]
+          .replace(/\\n/g, "\n")
+          .replace(/\\r/g, "\r")
+          .replace(/\\t/g, "\t")
+          .replace(/\\\(/g, "(")
+          .replace(/\\\)/g, ")")
+          .replace(/\\\\/g, "\\");
+        if (/^[0-9a-fA-F\s]+$/.test(str)) continue;
+        if (str.length >= 3) parenStrings.push(str);
+      }
 
-      return jsonResponse({ text: fullText });
+      const btBlocks = decoded.match(/BT[\s\S]*?ET/g) || [];
+      const btText: string[] = [];
+      for (const block of btBlocks) {
+        const tjMatches = block.match(/\[([^\]]+)\]\s*T[Jj]/g) || [];
+        for (const m of tjMatches) {
+          const inner = m.replace(/\]\s*T[Jj]/, "").replace(/^\[/, "");
+          const parts = inner.match(/\(([^)]+)\)/g) || [];
+          for (const p of parts) {
+            const s = p.slice(1, -1)
+              .replace(/\\n/g, "\n")
+              .replace(/\\r/g, "\r")
+              .replace(/\\t/g, "\t")
+              .replace(/\\\(/g, "(")
+              .replace(/\\\)/g, ")")
+              .replace(/\\\\/g, "\\");
+            if (s.length >= 2) btText.push(s);
+          }
+        }
+      }
+
+      const allText = [...parenStrings, ...btText].join(" ").replace(/\s+/g, " ").trim();
+
+      if (allText.length > 50) {
+        console.log("PDF parse success (basic extraction):", allText.length, "chars");
+        return jsonResponse({ text: allText });
+      }
+
+      return jsonResponse({ text: "", error: "No extractable text found in PDF" });
     } catch (error: any) {
       console.error("PDF parse error:", error);
       return jsonResponse({ text: "", error: error.message });
@@ -496,6 +586,7 @@ for (const path of [
   "/v1/drafts/create",
   "/v1/ats/analyze",
   "/v1/pdf/parse",
+  "/v1/ai/generate",
 ]) {
   http.route({ path, method: "OPTIONS", handler: CORS_HANDLER });
 }

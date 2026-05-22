@@ -2,6 +2,28 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { scoreResumeAgainstJD } from "./atsScoring";
 
+const NON_SKILL_KW = new Set([
+  "development", "ai-generated", "modern", "optimization", "improve",
+  "technologies", "advanced", "related", "architecture", "design",
+  "looking", "join", "company", "opportunity", "position", "apply",
+  "prefer", "required", "preferred", "qualifications", "bonus",
+  "excellent", "communication", "understanding", "knowledge",
+  "familiarity", "proficiency", "proficient", "expertise", "hands-on",
+  "environment", "agile", "practices", "methodologies", "approach",
+  "solutions", "deliver", "delivering", "building", "creating",
+  "maintaining", "ensure", "across", "multiple", "both", "either",
+  "based", "focus", "focused", "maintainability", "end",
+  "scalable", "production", "integration", "implementation",
+  "management", "quality", "best", "standards", "process",
+  "processes", "platform", "platforms", "frameworks", "libraries",
+  "develop", "developing", "provide", "providing", "support",
+  "supporting", "collaborate", "collaborating", "contribute",
+  "drive", "driving", "lead", "leading", "ensuring",
+  "high", "low", "great", "key", "core",
+  "deep", "wide", "full", "true", "real", "able", "available",
+  "minimum", "maximum", "ideal", "clear", "simple", "complex",
+]);
+
 function generateLatexFromResume(
   resumeText: string,
   jobTitle: string,
@@ -31,27 +53,27 @@ function generateLatexFromResume(
       linkedin = trimmed;
       continue;
     }
-    if (/^(summary|objective|about|profile|professional\s+summary)/i.test(trimmed) && trimmed.length < 40) {
+    if (/^(summary|objective|about|profile|professional\s+summary)/i.test(trimmed) && trimmed.length < 50) {
       currentSection = { heading: "Summary", lines: [] };
       sections.push(currentSection);
       continue;
     }
-    if (/^(experience|employment|work\s+history|professional\s+experience)/i.test(trimmed) && trimmed.length < 40) {
+    if (/^(experience|employment|work\s+history|work\s+experience|professional\s+experience)/i.test(trimmed) && trimmed.length < 50) {
       currentSection = { heading: "Experience", lines: [] };
       sections.push(currentSection);
       continue;
     }
-    if (/^(education|academic)/i.test(trimmed) && trimmed.length < 40) {
+    if (/^(education|academic)/i.test(trimmed) && trimmed.length < 50) {
       currentSection = { heading: "Education", lines: [] };
       sections.push(currentSection);
       continue;
     }
-    if (/^(skills|technologies|technical\s+skills|competencies)/i.test(trimmed) && trimmed.length < 40) {
+    if (/^(skills|technologies|technical\s+skills|competencies)/i.test(trimmed) && trimmed.length < 50) {
       currentSection = { heading: "Skills", lines: [] };
       sections.push(currentSection);
       continue;
     }
-    if (/^(projects?|certifications?|awards?|publications?|interests?|languages?|volunteer)/i.test(trimmed) && trimmed.length < 40) {
+    if (/^(projects?|certifications?|awards?|achievements?|publications?|interests?|languages?|volunteer)/i.test(trimmed) && trimmed.length < 50) {
       const heading = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
       currentSection = { heading, lines: [] };
       sections.push(currentSection);
@@ -75,10 +97,10 @@ function generateLatexFromResume(
 
   const skillsSection = sections.find((s) => s.heading === "Skills");
   const allSkills = skillsSection
-    ? skillsSection.lines.join(", ").split(/[,&|]/).map((s) => s.trim()).filter(Boolean)
+    ? skillsSection.lines.join(", ").split(/[,&|]/).map((s) => s.trim()).filter((s) => s && !NON_SKILL_KW.has(s.toLowerCase()) && !/^\d+$/.test(s))
     : [];
 
-  const optimizedSkills = [...new Set([...allSkills, ...missingKeywords.slice(0, 8)])];
+  const optimizedSkills = [...new Set([...allSkills, ...missingKeywords.filter((kw) => !NON_SKILL_KW.has(kw.toLowerCase())).slice(0, 5)])];
 
   const escLatex = (s: string) =>
     s.replace(/\\/g, "\\textbackslash{}")
@@ -136,6 +158,7 @@ function generateLatexFromResume(
     latex += `\\section{Education}\n`;
     latex += `\\begin{itemize}[leftmargin=*,itemsep=2pt]\n`;
     for (const line of eduSection.lines) {
+      if (/^\d+(\.\d+)?$/.test(line.trim())) continue;
       latex += `  \\item ${escLatex(line)}\n`;
     }
     latex += `\\end{itemize}\n\n`;
@@ -316,7 +339,8 @@ ${missingKw.length > 0 ? missingKw.slice(0, 10).join(", ") : "Add your relevant 
         localMatched: matchedKw,
         localMissing: missingKw,
         gapAnalysis,
-        resumeOriginalText: resumeText.slice(0, 5000),
+        resumeOriginalText: resumeText.slice(0, 10000),
+        localSuggestions: args.localSuggestions || [],
       },
       originalLatex: "",
       currentLatex: generatedLatex,
@@ -375,6 +399,7 @@ export const get = query({
           gapAnalysis: {
             ...gapAnalysis,
             resumeOriginalText: rawContext.resumeOriginalText || gapAnalysis.resumeOriginalText || "",
+            localSuggestions: rawContext.localSuggestions || [],
           },
         },
         optimization: {
@@ -388,6 +413,10 @@ export const get = query({
       initialScore: draft.initialScore,
       expiresAt: draft.expiresAt,
       compiledPdfUrl: draft.compiledPdfStorageId ? `/api/drafts/${draft._id}/pdf` : null,
+      resumeOriginalText: rawContext.resumeOriginalText || "",
+      jobDescription: rawContext.jobDescription || "",
+      jobTitle: rawContext.jobTitle || "",
+      company: rawContext.company || "",
     };
   },
 });
