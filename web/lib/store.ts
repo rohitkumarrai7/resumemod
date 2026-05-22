@@ -7,6 +7,16 @@ export interface Suggestion {
   applied: boolean;
 }
 
+function isValidResumeText(text: string): boolean {
+  if (!text || typeof text !== "string") return false;
+  if (text.startsWith("JVBERi0") || text.startsWith("iVBORw0K")) return false;
+  const pdfMarkers = ["%PDF", "PDF-1.", "/Linearized", "/Type /XRef", "/Type /Catalog", "endobj", "endstream", "<< /", "obj<<", "streamx", "/Filter /FlateDecode", "\\documentclass"];
+  if (pdfMarkers.some((m) => text.includes(m))) return false;
+  const binaryCount = (text.match(/[^\x20-\x7E\t\n\r]/g) || []).length;
+  if (text.length > 0 && binaryCount / text.length > 0.2) return false;
+  return text.length >= 50;
+}
+
 interface EditorState {
   draftId: string | null;
   latexSource: string;
@@ -126,16 +136,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     try {
       const { api } = await import("./api");
       const data = await api.drafts.get(draftId);
-
-      function isValidResumeText(text) {
-        if (!text || typeof text !== "string") return false;
-        if (text.startsWith("JVBERi0") || text.startsWith("iVBORw0K")) return false;
-        const pdfMarkers = ["%PDF", "PDF-1.", "/Linearized", "/Type /XRef", "/Type /Catalog", "endobj", "endstream", "<< /", "obj<<", "streamx", "/Filter /FlateDecode", "\\documentclass"];
-        if (pdfMarkers.some(m => text.includes(m))) return false;
-        const binaryCount = (text.match(/[^\x20-\x7E\t\n\r]/g) || []).length;
-        if (text.length > 0 && binaryCount / text.length > 0.2) return false;
-        return text.length >= 50;
-      }
 
       const jd = data.context?.job?.description || "";
       const apiResumeText = data.context?.resume?.rawText
