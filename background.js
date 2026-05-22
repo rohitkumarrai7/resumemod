@@ -233,7 +233,10 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         case "PARSE_PDF": {
           var base64 = (msg.payload || {}).base64 || "";
           try {
-            var result = await parsePdfBase64(base64);
+            if (!sender.tab || !sender.tab.id) {
+              throw new Error("No active tab available");
+            }
+            var result = await parsePdfBase64(base64, sender.tab.id);
             sendResponse({ ok: true, data: result });
           } catch (e) {
             sendResponse({ ok: false, error: e.message });
@@ -246,13 +249,15 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
           var last = stored[STORAGE.lastAnalysis] || {};
           var resumes = stored[STORAGE.resumes] || [];
           var resume = resumes.find(function (r) { return r.isDefault; }) || resumes[0];
-          var resumeText = resume && resume.textPreview ? resume.textPreview.slice(0, 5000) : "";
+          var resumeText = resume && (resume.extractedText || resume.textPreview) ? (resume.extractedText || resume.textPreview).slice(0, 10000) : "";
           var webUrl = WEB_BASE + "/editor" +
             "?jobTitle=" + encodeURIComponent(analysis.jobTitle || last.jobTitle || "") +
             "&company=" + encodeURIComponent(analysis.company || "") +
             "&score=" + encodeURIComponent(String(analysis.score || last.score || 0)) +
             "&source=" + encodeURIComponent(analysis.source || last.source || "") +
-            "&resumeText=" + encodeURIComponent(resumeText);
+            "&resumeText=" + encodeURIComponent(resumeText) +
+            "&matchedKeywords=" + encodeURIComponent((analysis.matchedKeywords || last.matchedKeywords || []).join(",")) +
+            "&missingKeywords=" + encodeURIComponent((analysis.missingKeywords || last.missingKeywords || []).join(","));
           chrome.tabs.create({ url: webUrl });
           sendResponse({ ok: true, url: webUrl });
           break;
@@ -357,6 +362,12 @@ async function createDraft(payload) {
     }
   }
 
+  if (!resumeText || resumeText.length < 50) {
+    console.log("Background: createDraft - no valid resumeText, will send base64 for server-side parsing");
+  }
+
+  console.log("Background: createDraft - resumeText length:", resumeText.length, "jobDescription length:", (payload.jobDescription || "").length);
+
   try {
     var res = await fetch(API_BASE + "/v1/drafts/create", {
       method: "POST",
@@ -373,6 +384,7 @@ async function createDraft(payload) {
         localScore: payload.localAnalysis ? payload.localAnalysis.score : undefined,
         localMatched: payload.localAnalysis ? payload.localAnalysis.matchedKeywords : undefined,
         localMissing: payload.localAnalysis ? payload.localAnalysis.missingKeywords : undefined,
+        localSuggestions: payload.localAnalysis ? payload.localAnalysis.suggestions : undefined,
       })
     });
 
@@ -707,39 +719,132 @@ function hashCode(s) {
   return Math.abs(h);
 }
 
-async function parsePdfBase64(base64) {
+async function parsePdfBase64(base64, tabId) {
   var base64Data = base64.replace(/^data:application\/pdf;base64,/, "");
   console.log("Background: parsePdfBase64 called, base64 length:", base64Data.length);
 
-  var url = "https://stoic-caiman-320.convex.site/v1/pdf/parse";
-  console.log("Background: Making request to", url);
-
-  var response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ base64: base64Data })
-  });
-
-  console.log("Background: Response status:", response.status);
-
-  if (!response.ok) {
-    var text = await response.text().catch(function() { return ""; });
-    console.error("Background: API error response:", text.slice(0, 300));
-    throw new Error("PDF parse API failed: " + response.status);
+  // Priority 1: FastAPI backend (has pdfplumber/PyMuPDF - best extraction)
+  try {
+    var LOCAL_API = "http://localhost:8000";
+    console.log("Background: Trying FastAPI backend at", LOCAL_API + "/v1/pdf/extract");
+    var res = await fetch(LOCAL_API + "/v1/pdf/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base64: base64Data })
+    });
+    if (res.ok) {
+      var data = await res.json();
+      if (data.text && data.text.length > 0) {
+        console.log("Background: FastAPI extraction success, length:", data.text.length);
+        return { text: data.text };
+      }
+    }
+  } catch (e) {
+    console.log("Background: FastAPI not available:", e.message);
   }
 
-  var result = await response.json();
-  console.log("Background: Parsed result, text length:", result.text ? result.text.length : 0);
-  if (result.error) {
-    throw new Error(result.error);
+  // Priority 2: Offscreen document with PDF.js + real Web Worker
+  try {
+    console.log("Background: Trying offscreen PDF.js extraction");
+    var offscreenResult = await extractPdfViaOffscreen(base64Data);
+    if (offscreenResult && offscreenResult.text && offscreenResult.text.length > 0) {
+      console.log("Background: Offscreen extraction success, length:", offscreenResult.text.length);
+      return { text: offscreenResult.text };
+    }
+  } catch (e) {
+    console.log("Background: Offscreen extraction failed:", e.message);
   }
-  if (!result.text || result.text.length < 30) {
-    throw new Error("No text found in PDF. It may be a scanned document.");
+
+  // Priority 3: Convex server-side basic extraction
+  try {
+    console.log("Background: Trying Convex PDF parse");
+    var convexRes = await fetch(API_BASE + "/v1/pdf/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base64: base64Data })
+    });
+    if (convexRes.ok) {
+      var convexData = await convexRes.json();
+      if (convexData.text && convexData.text.length > 0) {
+        console.log("Background: Convex extraction success, length:", convexData.text.length);
+        return { text: convexData.text };
+      }
+    }
+  } catch (e) {
+    console.log("Background: Convex PDF parse failed:", e.message);
   }
-  return result;
+
+  throw new Error("PDF extraction failed. Try running the FastAPI backend (backend/main.py) or upload a text-based PDF.");
 }
 
-chrome.runtime.onConnect.addListener(function () {});
+var _offscreenReady = false;
+
+async function ensureOffscreenDocument() {
+  if (_offscreenReady) return;
+  try {
+    var existingContexts = await chrome.runtime.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+      documentUrls: [chrome.runtime.getURL("offscreen.html")]
+    });
+    if (existingContexts && existingContexts.length > 0) {
+      _offscreenReady = true;
+      return;
+    }
+  } catch (e) {
+    // getContexts might not be available in older Chrome
+  }
+
+  try {
+    await chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: ["WORKERS"],
+      justification: "PDF text extraction requires pdf.js Web Workers"
+    });
+    _offscreenReady = true;
+    console.log("Background: Offscreen document created");
+  } catch (e) {
+    if (e.message && e.message.includes("Only a single offscreen")) {
+      _offscreenReady = true;
+    } else {
+      throw e;
+    }
+  }
+}
+
+function extractPdfViaOffscreen(base64Data) {
+  return new Promise(function (resolve, reject) {
+    var timeout = setTimeout(function () {
+      reject(new Error("Offscreen extraction timed out (30s)"));
+    }, 30000);
+
+    ensureOffscreenDocument().then(function () {
+      var port = chrome.runtime.connect({ name: "offscreen-pdf" });
+      port.postMessage({ type: "extract_pdf", base64: base64Data });
+
+      port.onMessage.addListener(function (msg) {
+        clearTimeout(timeout);
+        if (msg && msg.ok) {
+          resolve({ text: msg.text || "", pages: msg.pages || 0 });
+        } else {
+          reject(new Error((msg && msg.error) || "Offscreen extraction failed"));
+        }
+        port.disconnect();
+      });
+
+      port.onDisconnect.addListener(function () {
+        clearTimeout(timeout);
+        reject(new Error("Offscreen port disconnected"));
+      });
+    }).catch(function (e) {
+      clearTimeout(timeout);
+      reject(e);
+    });
+  });
+}
+
+chrome.runtime.onConnect.addListener(function (port) {
+  // Route offscreen responses if needed
+});
 
 if (typeof globalThis !== "undefined" && globalThis.addEventListener) {
   globalThis.addEventListener("online", function () {

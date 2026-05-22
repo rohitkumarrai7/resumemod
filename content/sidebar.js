@@ -385,10 +385,11 @@
       } else if ((file.type && file.type === "application/pdf") || /\.pdf$/i.test(file.name)) {
         try {
           var fullExtractedText = await extractTextFromPdfClient(base64);
-          if (fullExtractedText && fullExtractedText.length > 30) {
+          var hasPdfMarkers = /(%PDF-|obj\s*<<|endobj|stream\s|endstream|\/Type\/|\/Font|FlateDecode|xref|trailer|startxref)/.test(fullExtractedText || "");
+          if (fullExtractedText && fullExtractedText.length > 50 && isHumanReadable(fullExtractedText) && !hasPdfMarkers) {
             textPreview = fullExtractedText.slice(0, 20000);
           } else {
-            showError("No text found in PDF. It may be a scanned document or image-based PDF. Please upload a text-based PDF.");
+            showError("No readable text found in PDF. It may be a scanned document or image-based PDF. Please upload a different PDF.");
             fileInput.value = "";
             return;
           }
@@ -472,7 +473,8 @@ if ((file.type && file.type.startsWith("text/")) || /\.txt$/i.test(file.name)) {
        'javascript', 'python', 'react', 'node', 'full stack',
        'university', 'college', 'degree', 'bachelor', 'master',
        'email', 'phone', 'linkedin', 'github', 'portfolio',
-       'summary', 'objective', 'professional'
+       'summary', 'objective', 'professional', 'inc', 'ltd',
+       'company', 'technologies', 'achievements', 'responsibilities'
      ];
      var lowerText = text.toLowerCase();
      var hasResumeWords = resumeKeywords.some(function(kw) { return lowerText.includes(kw); });
@@ -481,11 +483,13 @@ if ((file.type && file.type.startsWith("text/")) || /\.txt$/i.test(file.name)) {
      var avgWordLength = words.length > 0 ? words.reduce(function(sum, w) { return sum + w.length; }, 0) / words.length : 0;
      var hasValidWords = avgWordLength > 3 && avgWordLength < 15;
 
-     var pdfMarkers = ['%PDF-', 'obj <<', 'endobj', 'stream', 'endstream', '/Type/', '/Font', '/Image', '/Length', '/Filter', 'FlateDecode', 'xref', 'trailer', 'startxref'];
-     var hasPdfMarkers = pdfMarkers.some(function(marker) { return text.includes(marker); });
+     var strictPdfMarkers = ['%PDF-', 'endstream', 'startxref'];
+     var strictCount = 0;
+     strictPdfMarkers.forEach(function(m) { if (text.includes(m)) strictCount++; });
+     var hasPdfMarkers = strictCount >= 2;
 
      var printableRatio = (text.match(/[\x20-\x7E]/g) || []).length / text.length;
-     var isPrintable = printableRatio > 0.85;
+     var isPrintable = printableRatio > 0.80;
 
      var isValid = (hasResumeWords || words.length > 20) && hasValidWords && !hasPdfMarkers && isPrintable;
      console.log("[ResumeForge] Text validation:", { length: text.length, hasResumeWords: hasResumeWords, avgWordLength: avgWordLength.toFixed(1), hasPdfMarkers: hasPdfMarkers, printableRatio: printableRatio.toFixed(2), isValid: isValid });
@@ -493,57 +497,139 @@ if ((file.type && file.type.startsWith("text/")) || /\.txt$/i.test(file.name)) {
      return isValid;
    }
 
-   async function extractTextFromPdfClient(base64) {
-       var base64Data = base64.replace(/^data:application\/pdf;base64,/, "");
-       console.log("[ResumeForge] Starting PDF extraction, base64 length:", base64Data.length);
+async function extractTextFromPdfClient(base64) {
+  var base64Data = base64.replace(/^data:application\/pdf;base64,/, "");
+  console.log("[ResumeForge] Starting PDF extraction, base64 length:", base64Data.length);
 
-       try {
-         var pdfLib = await loadPdfJs();
-         console.log("[ResumeForge] PDF.js loaded, processing document...");
-         var text = await extractWithPdfJs(base64Data, pdfLib);
-         if (text && text.length >= 30) {
-           console.log("[ResumeForge] PDF.js extraction SUCCESS:", text.length, "chars");
-           return text;
-         }
-         throw new Error("PDF text too short or empty");
-       } catch (e) {
-         console.error("[ResumeForge] PDF.js extraction failed:", e.message);
-       }
-
-       console.log("[ResumeForge] Falling back to server-side extraction...");
-       try {
-         var resp = await sendRuntime({
-           type: "PARSE_PDF",
-           payload: { base64: base64Data }
-         });
-         console.log("[ResumeForge] API response:", resp);
-         if (resp && resp.ok && resp.data && resp.data.text && resp.data.text.length >= 30) {
-           console.log("[ResumeForge] API extraction SUCCESS:", resp.data.text.length, "chars");
-           return resp.data.text;
-         }
-         if (resp && resp.error) {
-           throw new Error(resp.error);
-         }
-       } catch (e) {
-         console.error("[ResumeForge] API PDF parsing failed:", e.message);
-       }
-
-        console.log("[ResumeForge] Trying basic text extraction...");
-        try {
-          var decoded = atob(base64Data);
-          var textMatches = decoded.match(/[\x20-\x7E\n\r\t]{4,}/g) || [];
-          var basicText = textMatches.join(" ").replace(/\s+/g, " ").trim();
-          if (basicText.length > 100 && isHumanReadable(basicText)) {
-            console.log("[ResumeForge] Basic extraction SUCCESS:", basicText.length, "chars");
-            return basicText;
-          }
-          console.log("[ResumeForge] Basic extraction failed validation");
-        } catch (e) {
-          console.error("[ResumeForge] Basic extraction failed:", e.message);
-        }
-
-       throw new Error("Failed to extract text from PDF. Please try a different file.");
+  console.log("[ResumeForge] Requesting background extraction...");
+  try {
+    var resp = await sendRuntime({
+      type: "PARSE_PDF",
+      payload: { base64: base64Data }
+    });
+    console.log("[ResumeForge] Background response:", JSON.stringify(resp).substring(0, 500));
+    if (resp && resp.ok && resp.data && resp.data.text) {
+      var text = resp.data.text;
+      console.log("[ResumeForge] Background extraction text length:", text.length, "sample:", text.substring(0, 100));
+      if (text.length > 0) {
+        console.log("[ResumeForge] Background extraction SUCCESS:", text.length, "chars");
+        return text;
+      }
     }
+    if (resp && resp.error) {
+      console.error("[ResumeForge] Background extraction returned error:", resp.error);
+      throw new Error(resp.error);
+    }
+  } catch (e) {
+    console.error("[ResumeForge] Background extraction failed:", e.message);
+  }
+
+  console.log("[ResumeForge] Trying basic text extraction...");
+  try {
+    var text = basicPdfTextExtraction(base64Data);
+    console.log("[ResumeForge] Basic extraction result length:", text ? text.length : 0);
+    var hasPdfMarkers = /(%PDF-|obj\s*<<|endobj|stream\s|endstream|\/Type\/|\/Font|FlateDecode|xref|trailer|startxref)/.test(text || "");
+    console.log("[ResumeForge] Basic extraction hasPdfMarkers:", hasPdfMarkers);
+    if (text && text.length > 50 && !hasPdfMarkers && isHumanReadable(text)) {
+      console.log("[ResumeForge] Basic extraction SUCCESS:", text.length, "chars");
+      return text;
+    }
+    if (text && text.length > 500 && !hasPdfMarkers) {
+      var words = text.split(/\s+/).filter(function(w) { return w.length > 1; });
+      var printableRatio = (text.match(/[\x20-\x7E]/g) || []).length / text.length;
+      if (words.length > 30 && printableRatio > 0.70) {
+        console.log("[ResumeForge] Using basic extraction despite relaxed validation, length:", text.length);
+        return text;
+      }
+    }
+    console.log("[ResumeForge] Basic extraction failed validation or produced insufficient text");
+  } catch (e) {
+    console.error("[ResumeForge] Basic extraction failed:", e.message);
+  }
+
+  throw new Error("Failed to extract text from PDF. Please try a different file.");
+}
+
+function basicPdfTextExtraction(base64Data) {
+  var decoded = atob(base64Data);
+  var text = "";
+
+  var strings = decoded.match(/[\x20-\x7E\xA0-\xFF\n\r\t]{4,}/g) || [];
+  var pdfStructRe = /^(obj|endobj|stream|endstream|xref|trailer|startxref|\/\w+)$/i;
+  var filtered = strings.filter(function(s) {
+    var trimmed = s.trim();
+    if (pdfStructRe.test(trimmed)) return false;
+    if (/^\/(Type|Font|Image|Length|Filter|FlateDecode|Width|Height|ColorSpace|Subtype|BaseFont|Encoding|Kids|Parent|MediaBox|CropBox|Resources|Contents|ProcSet|ExtGState|XObject|Pattern|Shading|Properties)\b/i.test(trimmed)) return false;
+    if (/^[0-9a-fA-F\s]{12,}$/.test(trimmed)) return false;
+    if (/^\d+(\.\d+)?$/.test(trimmed)) return false;
+    if (trimmed.length < 4) return false;
+    if (/^[0-9]+\s+[0-9]+\s+(obj|R)$/.test(trimmed)) return false;
+    return true;
+  });
+
+  text = filtered.join(" ")
+    .replace(/\bobj\s*<</g, " ")
+    .replace(/\bendobj\b/g, " ")
+    .replace(/\bstream\b/g, " ")
+    .replace(/\bendstream\b/g, " ")
+    .replace(/\/(Type|Font|Image|Length|Filter|FlateDecode|Width|Height|ColorSpace|Subtype|BaseFont|Encoding|Kids|Parent|MediaBox|CropBox|Resources|Contents|ProcSet|ExtGState|XObject|Pattern|Shading|Properties)\b[^\/\]\)>]*/g, " ")
+    .replace(/%PDF-[\d.]+/g, "")
+    .replace(/\bstartxref\b/g, "")
+    .replace(/\bxref\b/g, "")
+    .replace(/\btrailer\b/g, "")
+    .replace(/\d+\s+\d+\s+R\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (text.length < 200) {
+    var parenStrings = [];
+    var regex = /\(([^)]{2,})\)/g;
+    var match;
+    while ((match = regex.exec(decoded)) !== null) {
+      var str = match[1]
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "\r")
+        .replace(/\\t/g, "\t")
+        .replace(/\\\(/g, "(")
+        .replace(/\\\)/g, ")")
+        .replace(/\\\\/g, "\\");
+      if (/^[0-9a-fA-F\s]+$/.test(str)) continue;
+      if (str.length >= 3) parenStrings.push(str);
+    }
+    if (parenStrings.length > 5) {
+      var parenText = parenStrings.join(" ").replace(/\s+/g, " ").trim();
+      if (parenText.length > text.length) text = parenText;
+    }
+  }
+
+  if (text.length < 200) {
+    var btBlocks = decoded.match(/BT[\s\S]*?ET/g) || [];
+    var btText = [];
+    btBlocks.forEach(function(block) {
+      var tjMatches = block.match(/\[([^\]]+)\]\s*T[Jj]/g) || [];
+      tjMatches.forEach(function(m) {
+        var inner = m.replace(/\]\s*T[Jj]/, "").replace(/^\[/, "");
+        var parts = inner.match(/\(([^)]+)\)/g) || [];
+        parts.forEach(function(p) {
+          var s = p.slice(1, -1)
+            .replace(/\\n/g, "\n")
+            .replace(/\\r/g, "\r")
+            .replace(/\\t/g, "\t")
+            .replace(/\\\(/g, "(")
+            .replace(/\\\)/g, ")")
+            .replace(/\\\\/g, "\\");
+          if (s.length >= 2) btText.push(s);
+        });
+      });
+    });
+    if (btText.length > 5) {
+      var btJoined = btText.join(" ").replace(/\s+/g, " ").trim();
+      if (btJoined.length > text.length) text = btJoined;
+    }
+  }
+
+  return text;
+}
 
     async function loadPdfJs() {
        if (pdfJsLoadPromise) {
@@ -967,7 +1053,8 @@ if ((file.type && file.type.startsWith("text/")) || /\.txt$/i.test(file.name)) {
         console.log("[ResumeForge] Stored text invalid (not human-readable), trying re-extraction...");
         try {
           var extractedText = await extractTextFromPdfClient(resume.base64);
-          if (extractedText && extractedText.length > 100 && isHumanReadable(extractedText)) {
+          var hasPdfMarkers = /(%PDF-|obj\s*<<|endobj|stream\s|endstream|\/Type\/|\/Font|FlateDecode|xref|trailer|startxref)/.test(extractedText || "");
+          if (extractedText && extractedText.length > 50 && isHumanReadable(extractedText) && !hasPdfMarkers) {
             resumeToSend = extractedText;
             resume.extractedText = extractedText;
             resume.textPreview = extractedText.slice(0, 20000);
@@ -979,6 +1066,8 @@ if ((file.type && file.type.startsWith("text/")) || /\.txt$/i.test(file.name)) {
               await chrome.storage.local.set({ rf_resumes: resumesR });
             }
             console.log("[ResumeForge] Re-extraction success:", extractedText.length, "chars");
+          } else {
+            console.log("[ResumeForge] Re-extraction returned invalid text (hasPdfMarkers:", hasPdfMarkers, ", length:", extractedText ? extractedText.length : 0, ")");
           }
         } catch (e) {
           console.error("[ResumeForge] Re-extraction failed:", e);
@@ -1021,16 +1110,10 @@ if ((file.type && file.type.startsWith("text/")) || /\.txt$/i.test(file.name)) {
 
       if (resp.ok && resp.data && resp.data.editorUrl) {
         var editorUrlWithResume = resp.data.editorUrl;
-        if (resumeToSend && !editorUrlWithResume.includes("resumeText=")) {
-          editorUrlWithResume += (editorUrlWithResume.includes("?") ? "&" : "?") + "resumeText=" + encodeURIComponent(resumeToSend.slice(0, 5000));
-        }
         window.open(editorUrlWithResume, "_blank");
         flash("Editor opened! Optimizing your resume...");
       } else if (resp.ok && resp.data && resp.data.draftId) {
         var editorUrl = "http://localhost:3000/editor?draft=" + resp.data.draftId;
-        if (resumeToSend) {
-          editorUrl += "&resumeText=" + encodeURIComponent(resumeToSend.slice(0, 5000));
-        }
         window.open(editorUrl, "_blank");
         flash("Editor opened! Optimizing your resume...");
       } else {

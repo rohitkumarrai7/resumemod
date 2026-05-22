@@ -9,7 +9,8 @@
     "scripting",
     "storage",
     "tabs",
-    "identity"
+    "identity",
+    "offscreen"
   ],
   "host_permissions": [
     "http://localhost:8000/*",
