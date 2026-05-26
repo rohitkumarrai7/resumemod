@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none" role="img" aria-label="Fluxpage">
+  <defs>
+    <linearGradient id="fp-bg" x1="6" y1="4" x2="42" y2="44" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0369A1"/>
+      <stop offset="1" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="fp-ring" x1="30" y1="28" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#A78BFA"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" rx="12" fill="url(#fp-bg)"/>
+  <path d="M15 12h14a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H19v5h8a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-8v5a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2V14a2 2 0 0 1 2-2z" fill="#fff"/>
+  <circle cx="33" cy="33" r="7" stroke="url(#fp-ring)" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="28 44" transform="rotate(-90 33 33)"/>
+</svg>
