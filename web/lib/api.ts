@@ -1,10 +1,13 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://stoic-caiman-320.convex.site";
+import { parseResumeText } from "./resumeParser";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://canny-woodpecker-211.convex.site";
 
 export interface User {
   id: string;
   email: string;
   name: string | null;
   tier: string;
+  onboardingCompleted?: boolean;
 }
 
 function getToken(): string | null {
@@ -43,12 +46,25 @@ async function apiFetch(path: string, options: RequestInit = {}): Promise<Respon
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
-  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  const proxyPath = path.startsWith("/") ? path.slice(1) : path;
+  let res: Response;
+  try {
+    res = await fetch(`/api/convex/${proxyPath}`, { ...options, headers });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Network error";
+    if (msg === "Failed to fetch") {
+      if (!getToken()) {
+        throw new Error("Not signed in. Please sign in again at /login.");
+      }
+      throw new Error("Could not reach the server. Try refreshing the page.");
+    }
+    throw new Error(msg);
+  }
   if (res.status === 401 && token) {
     const refreshed = await refreshToken();
     if (refreshed) {
       headers["Authorization"] = `Bearer ${getToken()}`;
-      return fetch(`${API_URL}${path}`, { ...options, headers });
+      return fetch(`/api/convex/${proxyPath}`, { ...options, headers });
     }
     clearTokens();
     if (typeof window !== "undefined") {
@@ -120,6 +136,36 @@ export const api = {
     },
     getUser: () => getStoredUser(),
     isLoggedIn: () => !!getToken(),
+    getProfile: async () => {
+      const res = await apiFetch("/v1/auth/profile");
+      if (!res.ok) throw new Error("Failed to fetch profile");
+      const profile = await res.json();
+      const stored = getStoredUser();
+      if (stored) {
+        setUser({ ...stored, onboardingCompleted: profile.onboardingCompleted });
+      }
+      return profile;
+    },
+    completeOnboarding: async () => {
+      const token = getToken();
+      if (!token) {
+        throw new Error("Not signed in. Please wait for account sync or sign in again.");
+      }
+      const res = await fetch("/api/auth/onboarding/complete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Failed to complete onboarding" }));
+        throw new Error(err.detail || "Failed to complete onboarding");
+      }
+      const user = getStoredUser();
+      if (user) setUser({ ...user, onboardingCompleted: true });
+      return res.json();
+    },
   },
   resumes: {
     list: async () => {
@@ -127,21 +173,59 @@ export const api = {
       if (!res.ok) throw new Error("Failed to fetch resumes");
       return res.json();
     },
-    upload: async (file: File) => {
-      // Read file content as text for the Convex JSON endpoint
-      const text = await file.text();
+    upload: async (file: File, label?: string) => {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const parseRes = await fetch("/api/parse-resume", {
+        method: "POST",
+        body: formData,
+      });
+      if (!parseRes.ok) {
+        const err = await parseRes.json().catch(() => ({ error: "Parse failed" }));
+        throw new Error(err.error || "Failed to parse resume file");
+      }
+      const parsed = await parseRes.json();
+
+      const structuredData = parsed.text ? parseResumeText(parsed.text) : undefined;
+
       const res = await apiFetch("/v1/resumes/upload", {
         method: "POST",
         body: JSON.stringify({
-          filename: file.name,
-          mimeType: file.type,
-          fileSize: file.size,
-          rawText: text,
-          textPreview: text.slice(0, 500),
-          label: file.name.replace(/\.[^/.]+$/, ""),
+          filename: parsed.filename || file.name,
+          mimeType: parsed.mimeType || file.type,
+          fileSize: parsed.fileSize || file.size,
+          rawText: parsed.text,
+          textPreview: parsed.textPreview || parsed.text.slice(0, 500),
+          structuredData,
+          label: label || file.name.replace(/\.[^/.]+$/, ""),
         }),
       });
-      if (!res.ok) throw new Error("Upload failed");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "Upload failed" }));
+        throw new Error(err.detail || "Upload failed");
+      }
+      const uploaded = await res.json();
+      return {
+        ...uploaded,
+        text: parsed.text,
+        textPreview: parsed.textPreview || parsed.text.slice(0, 500),
+      };
+    },
+    setDefault: async (id: string) => {
+      const res = await apiFetch(`/v1/resumes/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ setDefault: true }),
+      });
+      if (!res.ok) throw new Error("Failed to set default resume");
+      return res.json();
+    },
+    update: async (id: string, data: { label?: string; profileRole?: string; lastAtsScore?: number }) => {
+      const res = await apiFetch(`/v1/resumes/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) throw new Error("Failed to update resume");
       return res.json();
     },
     delete: async (id: string) => {
@@ -163,7 +247,7 @@ export const api = {
       if (!res.ok) throw new Error("Failed to save job");
       return res.json();
     },
-    update: async (id: string, data: { status?: string; notes?: string }) => {
+    update: async (id: string, data: { status?: string; stage?: string; notes?: string }) => {
       const res = await apiFetch(`/v1/jobs/${id}`, { method: "PATCH", body: JSON.stringify(data) });
       if (!res.ok) throw new Error("Failed to update job");
       return res.json();
@@ -200,6 +284,19 @@ export const api = {
       if (!res.ok) throw new Error("Convert failed");
       return res.json();
     },
+    saveState: async (draftId: string, data: {
+      structuredResume: unknown;
+      aiSuggestions: unknown[];
+      currentScore: number;
+    }) => {
+      const res = await fetch(`${API_URL}/v1/drafts/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ draftId, ...data }),
+      });
+      if (!res.ok) throw new Error("Failed to save draft state");
+      return res.json();
+    },
   },
   ats: {
     analyze: async (resumeText: string, jobDescription: string) => {
@@ -208,6 +305,83 @@ export const api = {
         body: JSON.stringify({ resumeText, jobDescription }),
       });
       if (!res.ok) throw new Error("Analysis failed");
+      return res.json();
+    },
+  },
+  tailoring: {
+    create: async (data: {
+      resumeId?: string;
+      jobId?: string;
+      resumeText: string;
+      jobDescription: string;
+      jobTitle?: string;
+      company?: string;
+    }) => {
+      const res = await apiFetch("/v1/tailoring/create", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) throw new Error("Failed to create tailoring run");
+      return res.json();
+    },
+    get: async (runId: string) => {
+      const res = await fetch(`${API_URL}/v1/tailoring/${runId}`, {
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!res.ok) throw new Error("Failed to fetch tailoring run");
+      return res.json();
+    },
+    complete: async (data: {
+      runId: string;
+      scoreAfter: number;
+      suggestions: unknown[];
+      latexSource?: string;
+      provider?: string;
+      latencyMs?: number;
+    }) => {
+      const res = await apiFetch("/v1/tailoring/complete", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) throw new Error("Failed to complete tailoring run");
+      return res.json();
+    },
+  },
+  coverLetters: {
+    create: async (data: {
+      jobId?: string;
+      resumeVersionId?: string;
+      tone?: string;
+      content: string;
+    }) => {
+      const res = await apiFetch("/v1/cover-letters", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) throw new Error("Failed to create cover letter");
+      return res.json();
+    },
+    list: async () => {
+      const res = await apiFetch("/v1/cover-letters");
+      if (!res.ok) throw new Error("Failed to fetch cover letters");
+      return res.json();
+    },
+  },
+  templates: {
+    list: async (category?: string) => {
+      const qs = category ? `?category=${encodeURIComponent(category)}` : "";
+      const res = await fetch(`/api/convex/v1/templates${qs}`, {
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!res.ok) throw new Error("Failed to fetch templates");
+      return res.json();
+    },
+    seed: async () => {
+      const res = await fetch(`/api/convex/v1/templates/seed`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!res.ok) throw new Error("Failed to seed templates");
       return res.json();
     },
   },
