@@ -61,7 +61,9 @@
 
   function bindActions() {
     $("#openDashboard").addEventListener("click", function () {
-      chrome.tabs.create({ url: "http://localhost:3000/dashboard" });
+      var cfg = (typeof globalThis !== "undefined" && globalThis.__RESUMOD_CONFIG__) || {};
+      var webBase = cfg.WEB_BASE || "http://localhost:3000";
+      chrome.tabs.create({ url: webBase + "/dashboard" });
     });
 
     $("#openLinkedInJobs").addEventListener("click", function () {

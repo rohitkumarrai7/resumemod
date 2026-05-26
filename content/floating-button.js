@@ -205,7 +205,7 @@
     "cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 0;" +
     '">' +
     '<span style="display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; background: linear-gradient(135deg, #00cc61 0%, #00a651 100%); border-radius: 5px; font-size: 11px; font-weight: 800;">R</span>' +
-    "Save to ResumeForge" +
+    "Save to Fluxpage" +
     "</button>" +
     '<button id="rm-float-dismiss" style="' +
     "position: absolute; top: -6px; right: -6px; width: 18px; height: 18px;" +

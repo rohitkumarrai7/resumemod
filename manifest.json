@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "ResumeForge — ATS Optimizer",
+  "name": "Fluxpage — ATS Resume Assistant",
   "version": "2.0.0",
-  "description": "Instantly tailor your resume to any job posting. One-click LaTeX optimization.",
-  "action": { "default_title": "ResumeForge" },
+  "description": "Tailor your resume to any job in 30 seconds. ATS scoring, cover letters, and job tracking.",
+  "action": { "default_title": "Fluxpage" },
   "permissions": [
     "activeTab",
     "scripting",
@@ -14,10 +14,9 @@
   ],
   "host_permissions": [
     "http://localhost:8000/*",
-    "https://canny-woodpecker-211.convex.site/*",
-    "https://canny-woodpecker-211.convex.cloud/*",
-    "https://stoic-caiman-320.convex.site/*",
-    "https://stoic-caiman-320.convex.cloud/*",
+    "http://localhost:3000/*",
+    "https://*.convex.site/*",
+    "https://*.convex.cloud/*",
     "https://www.linkedin.com/*",
     "https://*.linkedin.com/*",
     "https://internshala.com/*",
@@ -33,7 +32,7 @@
     "service_worker": "background.js"
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' http://localhost:8000 https://canny-woodpecker-211.convex.site https://canny-woodpecker-211.convex.cloud https://stoic-caiman-320.convex.site https://stoic-caiman-320.convex.cloud http://localhost:3000 https://unpkg.com"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' http://localhost:8000 http://localhost:3000 https://*.convex.site https://*.convex.cloud https://unpkg.com"
   },
   "content_scripts": [
     {
@@ -42,7 +41,8 @@
         "content/extract-common.js",
         "content/detector.js",
         "content/universal-extractor.js",
-        "content/floating-button.js"
+        "content/floating-button.js",
+        "content/jd-highlighter.js"
       ],
       "run_at": "document_idle"
     },
@@ -111,7 +111,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["lib/pdfjs/*", "content/pdf.min.js", "content/pdf.worker.min.js", "callback.html", "callback.js"],
+      "resources": ["lib/pdfjs/*", "content/pdf.min.js", "content/pdf.worker.min.js", "callback.html", "callback.js", "icons/logo-mark.svg", "icons/logo.svg"],
       "matches": ["<all_urls>"]
     }
   ]

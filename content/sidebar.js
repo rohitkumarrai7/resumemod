@@ -82,12 +82,12 @@
     );
     shadowRoot.appendChild(container);
     sidebarEl = container;
-    container.innerHTML = TEMPLATE;
+    container.innerHTML = TEMPLATE.replace("__LOGO_URL__", chrome.runtime.getURL("icons/logo-mark.svg"));
 
     document.documentElement.appendChild(shadowHost);
 
     bindEvents();
-    refreshAuthStatus();
+    refreshAuthStatus().then(function () { mergeCloudResumes(); });
     refreshResumes();
     refreshLastAnalysis();
     loadSettingsIntoUI();
@@ -275,12 +275,49 @@
       pageUrl: location.href
     };
 
+    chrome.storage.local.get([STORAGE.lastAnalysis], function (stored) {
+      var last = stored[STORAGE.lastAnalysis];
+      if (last && typeof last.score === "number") {
+        jobData.atsScore = Math.round(last.score);
+      }
+      saveJobToCloud(jobData, btn, statusEl);
+    });
+  }
+
+  async function saveJobToCloud(jobData, btn, statusEl) {
     try {
       var resp = await sendRuntime({ type: "SAVE_JOB", payload: jobData });
       if (resp.ok) {
+        var serverId = resp.data && resp.data.id;
+        if (serverId) {
+          chrome.storage.local.get([STORAGE.savedJobs], function (result) {
+            var jobs = (result[STORAGE.savedJobs] || []).filter(function (j) {
+              if (j.id === serverId) return false;
+              if (j.id.indexOf("local_") === 0 && j.payload && j.payload.pageUrl === jobData.pageUrl) return false;
+              if (j.pageUrl === jobData.pageUrl && j.id !== serverId) return false;
+              return true;
+            });
+            jobs.unshift({
+              id: serverId,
+              title: jobData.title,
+              company: jobData.company,
+              location: jobData.location,
+              savedAt: Date.now(),
+              source: jobData.source,
+              syncStatus: "synced",
+              pageUrl: jobData.pageUrl,
+              atsScore: jobData.atsScore
+            });
+            if (jobs.length > 50) jobs = jobs.slice(0, 50);
+            chrome.storage.local.set({ rf_saved_jobs: jobs });
+            loadSavedJobs();
+          });
+        } else {
+          loadSavedJobs();
+        }
         statusEl.textContent = "Saved!";
         statusEl.className = "save-status synced";
-        flash("Job saved to Resumod.");
+        flash("Job saved to Fluxpage.");
         loadSavedJobs();
       } else {
         statusEl.textContent = "Saved locally (sync pending)";
@@ -293,7 +330,7 @@
       saveJobLocally(jobData);
     } finally {
       btn.disabled = false;
-      btn.textContent = "Save to Resumod";
+      btn.textContent = "Save to Fluxpage";
       setTimeout(function () { statusEl.hidden = true; }, 3000);
     }
   }
@@ -318,8 +355,19 @@
   }
 
   function loadSavedJobs() {
-    chrome.storage.local.get([STORAGE.savedJobs], function (result) {
-      var jobs = result[STORAGE.savedJobs] || [];
+    chrome.runtime.sendMessage({ type: "FETCH_JOBS" }, function (resp) {
+      if (resp && resp.ok && resp.data && resp.data.length > 0) {
+        chrome.storage.local.set({ rf_saved_jobs: resp.data });
+        renderSavedJobsList(resp.data);
+        return;
+      }
+      chrome.storage.local.get([STORAGE.savedJobs], function (result) {
+        renderSavedJobsList(result[STORAGE.savedJobs] || []);
+      });
+    });
+  }
+
+  function renderSavedJobsList(jobs) {
       var listEl = $("#savedJobsList");
       var countEl = $("#savedCount");
       if (!listEl) return;
@@ -352,7 +400,6 @@
           deleteJobLocal(jobId);
         });
       });
-    });
   }
 
   function deleteJobLocal(jobId) {
@@ -379,9 +426,13 @@
     try {
       var base64 = await fileToBase64(file);
       var textPreview = "";
+      var fullExtractedText = "";
 
       if ((file.type && file.type.startsWith("text/")) || /\.txt$/i.test(file.name)) {
-        try { textPreview = (await file.text()).slice(0, 20000); } catch (e) { }
+        try {
+          fullExtractedText = await file.text();
+          textPreview = fullExtractedText.slice(0, 20000);
+        } catch (e) { }
       } else if ((file.type && file.type === "application/pdf") || /\.pdf$/i.test(file.name)) {
         try {
           var fullExtractedText = await extractTextFromPdfClient(base64);
@@ -418,7 +469,34 @@
       resumes.push(newResume);
       await chrome.storage.local.set({ rf_resumes: resumes });
       refreshResumes();
+      renderResumesList();
       flash("Resume uploaded successfully.");
+
+      var rawText = fullExtractedText || textPreview;
+      if (rawText && rawText.length >= 50) {
+        sendRuntime({
+          type: "UPLOAD_RESUME",
+          payload: {
+            filename: file.name,
+            mimeType: newResume.mimeType,
+            fileSize: file.size,
+            rawText: rawText,
+            label: newResume.label
+          }
+        }).then(function (uploadResp) {
+          if (uploadResp.ok && uploadResp.data && uploadResp.data.id) {
+            chrome.storage.local.get([STORAGE.resumes], function (result) {
+              var list = result[STORAGE.resumes] || [];
+              var idx = list.findIndex(function (r) { return r.id === newResume.id; });
+              if (idx >= 0) {
+                list[idx].cloudId = uploadResp.data.id;
+                list[idx].syncStatus = "synced";
+                chrome.storage.local.set({ rf_resumes: list });
+              }
+            });
+          }
+        }).catch(function () { /* queued for sync */ });
+      }
     } catch (err) {
       showError("Could not read file: " + (err.message || err));
     } finally {
@@ -746,6 +824,51 @@ function basicPdfTextExtraction(base64Data) {
     });
   }
 
+  async function mergeCloudResumes() {
+    try {
+      var authStored = await chrome.storage.local.get([STORAGE.auth]);
+      if (!authStored[STORAGE.auth] || !authStored[STORAGE.auth].token) return;
+
+      var resp = await sendRuntime({ type: "FETCH_RESUMES" });
+      if (!resp.ok || !resp.data || !resp.data.length) return;
+
+      var stored = await chrome.storage.local.get([STORAGE.resumes]);
+      var local = stored[STORAGE.resumes] || [];
+      var merged = local.slice();
+
+      resp.data.forEach(function (cloud) {
+        var exists = merged.some(function (r) {
+          return r.cloudId === cloud.id || r.id === "cloud_" + cloud.id;
+        });
+        if (exists || !cloud.rawText) return;
+        merged.push({
+          id: "cloud_" + cloud.id,
+          cloudId: cloud.id,
+          filename: cloud.filename || "resume.txt",
+          mimeType: cloud.mimeType || "text/plain",
+          size: cloud.fileSize || cloud.rawText.length,
+          base64: "",
+          textPreview: cloud.textPreview || cloud.rawText.slice(0, 20000),
+          extractedText: cloud.rawText,
+          uploadedAt: cloud.createdAt || Date.now(),
+          label: cloud.label || cloud.filename || "Cloud resume",
+          isDefault: cloud.isDefault && merged.every(function (r) { return !r.isDefault; }),
+          syncStatus: "synced"
+        });
+      });
+
+      if (merged.length > 0 && !merged.some(function (r) { return r.isDefault; })) {
+        merged[0].isDefault = true;
+      }
+
+      await chrome.storage.local.set({ rf_resumes: merged });
+      refreshResumes();
+      renderResumesList();
+    } catch (e) {
+      /* ignore merge errors */
+    }
+  }
+
   async function refreshResumes() {
     var stored = await chrome.storage.local.get([STORAGE.resumes]);
     var resumes = stored[STORAGE.resumes] || [];
@@ -960,7 +1083,7 @@ function basicPdfTextExtraction(base64Data) {
 
     var score = Math.max(0, Math.min(100, Math.round(Number(analysis.score) || 0)));
     $("#scoreNum").textContent = score;
-    var ringColor = score >= 75 ? "#00cc61" : score >= 50 ? "#f59e0b" : "#ef4444";
+    var ringColor = score >= 75 ? "#16a34a" : score >= 50 ? "#d97706" : "#dc2626";
     $("#scoreRing").style.background = "conic-gradient(" + ringColor + " " + (score * 3.6) + "deg, rgba(0,64,80,0.12) 0)";
 
     $("#jobTitleOut").textContent = ctx.jobTitle || "(job title unknown)";
@@ -1108,14 +1231,13 @@ function basicPdfTextExtraction(base64Data) {
         }
       });
 
-      if (resp.ok && resp.data && resp.data.editorUrl) {
-        var editorUrlWithResume = resp.data.editorUrl;
-        window.open(editorUrlWithResume, "_blank");
-        flash("Editor opened! Optimizing your resume...");
-      } else if (resp.ok && resp.data && resp.data.draftId) {
-        var editorUrl = "http://localhost:3000/editor?draft=" + resp.data.draftId;
+      if (resp.ok && resp.data && (resp.data.editorUrl || resp.data.draftId)) {
+        var cfg = (typeof globalThis !== "undefined" && globalThis.__RESUMOD_CONFIG__) || {};
+        var webBase = cfg.WEB_BASE || "http://localhost:3000";
+        var draftId = resp.data.draftId || (resp.data.editorUrl || "").split("draft=")[1];
+        var editorUrl = webBase + "/tailor?draft=" + encodeURIComponent(draftId || "");
         window.open(editorUrl, "_blank");
-        flash("Editor opened! Optimizing your resume...");
+        flash("Editor opened! Tailoring your resume...");
       } else {
         throw new Error((resp.error) || "Failed to create draft. Make sure you are logged in.");
       }
@@ -1283,6 +1405,7 @@ function basicPdfTextExtraction(base64Data) {
       statusEl.textContent = "Logged in as " + (auth.user.email || "");
       loginBtn.hidden = true;
       logoutBtn.hidden = false;
+      mergeCloudResumes();
     } else {
       statusEl.textContent = "Not logged in";
       loginBtn.hidden = false;
@@ -1303,7 +1426,7 @@ function basicPdfTextExtraction(base64Data) {
 
   async function onSaveSettings() {
     var cfg = {
-      apiEndpoint: $("#apiEndpoint").value.trim() || "https://stoic-caiman-320.convex.site/v1/ats/analyze",
+      apiEndpoint: $("#apiEndpoint").value.trim() || "https://canny-woodpecker-211.convex.site/v1/ats/analyze",
       mockMode: $("#mockMode").checked
     };
     await chrome.storage.local.set({ rf_settings: cfg });
@@ -1364,10 +1487,10 @@ function basicPdfTextExtraction(base64Data) {
 
       '<div class="header">' +
         '<div class="header-left">' +
-          '<div class="app-icon">R</div>' +
+          '<img class="app-icon" src="__LOGO_URL__" alt="Fluxpage" />' +
           '<div class="header-titles">' +
-             '<div class="app-title">ResumeForge</div>' +
-            '<div class="app-sub">ATS Optimizer</div>' +
+             '<div class="app-title">Fluxpage</div>' +
+            '<div class="app-sub">AI Job Assistant</div>' +
           '</div>' +
           '<span class="src-badge" id="sourceBadge">\u2014</span>' +
         '</div>' +
@@ -1403,7 +1526,7 @@ function basicPdfTextExtraction(base64Data) {
           '<label class="fld"><span>Skills (comma-separated)</span><input type="text" id="saveSkills" placeholder="React, Node.js, Python" /></label>' +
           '<label class="fld"><span>Apply URL</span><input type="text" id="saveApplyUrl" placeholder="https://..." /></label>' +
           '<label class="fld"><span>Source</span><input type="text" id="saveSource" readonly /></label>' +
-          '<button class="btn btn-primary full-width" id="saveJobBtn">Save to Resumod</button>' +
+          '<button class="btn btn-primary full-width" id="saveJobBtn">Save to Fluxpage</button>' +
           '<div id="saveStatus" class="save-status" hidden></div>' +
         '</div>' +
         '<div class="card">' +
@@ -1540,40 +1663,38 @@ function basicPdfTextExtraction(base64Data) {
 
       '.glass-accent {' +
         'position: absolute; inset: 0;' +
-        'background: linear-gradient(135deg, rgba(37, 99, 235, 0.08) 0%, transparent 50%, rgba(0, 204, 97, 0.05) 100%);' +
+        'background: linear-gradient(135deg, rgba(3, 105, 161, 0.06) 0%, transparent 50%, rgba(124, 58, 237, 0.04) 100%);' +
         'pointer-events: none;' +
       '}' +
 
       '.header {' +
-        'background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 55%, #2563eb 100%);' +
-        'color: #fff;' +
+        'background: #ffffff;' +
+        'color: #0b1220;' +
         'padding: 14px 16px;' +
         'display: flex;' +
         'align-items: center;' +
         'justify-content: space-between;' +
         'position: relative;' +
         'flex-shrink: 0;' +
+        'border-bottom: 1px solid rgba(15, 23, 42, 0.08);' +
       '}' +
       '.header::after {' +
         'content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px;' +
-        'background: linear-gradient(90deg, transparent, rgba(0, 204, 97, 0.55), transparent);' +
+        'background: linear-gradient(90deg, transparent, rgba(3, 105, 161, 0.25), transparent);' +
       '}' +
       '.header-left { display: flex; align-items: center; gap: 10px; }' +
       '.app-icon {' +
-        'width: 30px; height: 30px;' +
-        'background: linear-gradient(135deg, #00cc61 0%, #00a651 100%);' +
-        'border-radius: 8px;' +
-        'display: flex; align-items: center; justify-content: center;' +
-        'font-size: 14px; font-weight: 700; color: #fff;' +
-        'box-shadow: 0 2px 10px rgba(0, 204, 97, 0.35);' +
+        'width: 30px; height: 30px; border-radius: 8px;' +
+        'display: block; flex-shrink: 0;' +
+        'box-shadow: 0 2px 8px rgba(3, 105, 161, 0.2);' +
       '}' +
       '.header-titles { line-height: 1.1; }' +
-      '.app-title { font-size: 14px; font-weight: 600; }' +
-      '.app-sub { font-size: 10px; opacity: 0.82; margin-top: 2px; letter-spacing: 0.04em; text-transform: uppercase; }' +
+      '.app-title { font-size: 14px; font-weight: 600; color: #0b1220; }' +
+      '.app-sub { font-size: 10px; color: #64748b; margin-top: 2px; letter-spacing: 0.04em; text-transform: uppercase; }' +
       '.src-badge {' +
         'margin-left: 8px; font-size: 9px; font-weight: 700; letter-spacing: 0.08em;' +
         'padding: 3px 7px; border-radius: 999px;' +
-        'background: rgba(0, 204, 97, 0.18); color: #a7f3d0; border: 1px solid rgba(0, 204, 97, 0.35);' +
+        'background: rgba(3, 105, 161, 0.1); color: #0369a1; border: 1px solid rgba(3, 105, 161, 0.2);' +
       '}' +
 
       '.window-controls { display: flex; align-items: center; gap: 8px; }' +
@@ -1595,8 +1716,8 @@ function basicPdfTextExtraction(base64Data) {
         'font-family: inherit; border-bottom: 2px solid transparent;' +
         'transition: color 0.15s, border-color 0.15s;' +
       '}' +
-      '.tab-btn:hover { color: #1e40af; }' +
-      '.tab-btn.active { color: #2563eb; border-bottom-color: #2563eb; }' +
+      '.tab-btn:hover { color: #0369a1; }' +
+      '.tab-btn.active { color: #0369a1; border-bottom-color: #0369a1; }' +
 
       '.container {' +
         'flex: 1; overflow-y: auto; padding: 14px;' +
@@ -1635,8 +1756,8 @@ function basicPdfTextExtraction(base64Data) {
       '.fld textarea { resize: vertical; min-height: 60px; }' +
       '.fld select { cursor: pointer; }' +
       '.fld input:focus, .fld textarea:focus, .fld select:focus {' +
-        'outline: none; border-color: #2563eb;' +
-        'box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);' +
+        'outline: none; border-color: #0369a1;' +
+        'box-shadow: 0 0 0 3px rgba(3, 105, 161, 0.12);' +
       '}' +
       '.fld input[readonly] { background: #f1f5f9; color: #64748b; }' +
 
@@ -1647,13 +1768,13 @@ function basicPdfTextExtraction(base64Data) {
         'transition: transform 0.15s, box-shadow 0.15s, background 0.15s;' +
       '}' +
       '.btn-primary {' +
-        'background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);' +
-        'color: #fff; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.28);' +
+        'background: #0369a1;' +
+        'color: #fff; box-shadow: 0 2px 8px rgba(3, 105, 161, 0.25);' +
       '}' +
-      '.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(37, 99, 235, 0.35); }' +
+      '.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(3, 105, 161, 0.3); background: #075985; }' +
       '.btn-outline { background: #fff; color: #0f172a; border: 1px solid rgba(15, 23, 42, 0.14); }' +
       '.btn-outline:hover { background: #f1f5f9; }' +
-      '.btn-text { background: none; color: #2563eb; padding: 4px 8px; }' +
+      '.btn-text { background: none; color: #0369a1; padding: 4px 8px; }' +
       '.btn-text:hover { text-decoration: underline; }' +
       '.btn-sm { padding: 4px 10px; font-size: 11px; }' +
       '.full-width { width: 100%; margin-top: 14px; }' +
@@ -1661,12 +1782,12 @@ function basicPdfTextExtraction(base64Data) {
       '.start-btn {' +
         'width: 100%; padding: 13px 16px; border: none; border-radius: 9px;' +
         'font-size: 14px; font-weight: 700; font-family: inherit;' +
-        'background: linear-gradient(135deg, #00cc61 0%, #00a651 100%);' +
+        'background: #0369a1;' +
         'color: #fff; cursor: pointer;' +
-        'box-shadow: 0 4px 16px rgba(0, 204, 97, 0.35);' +
+        'box-shadow: 0 4px 12px rgba(3, 105, 161, 0.25);' +
         'transition: transform 0.15s, box-shadow 0.15s, background 0.2s;' +
       '}' +
-      '.start-btn:hover:not([disabled]) { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(0, 204, 97, 0.45); }' +
+      '.start-btn:hover:not([disabled]) { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(3, 105, 161, 0.35); background: #075985; }' +
       '.start-btn[disabled] { background: #cbd5e1; color: #fff; cursor: not-allowed; box-shadow: none; }' +
       '.start-btn.loading { background: #6b7280; }' +
       '.start-btn.loading::after {' +
@@ -1710,7 +1831,7 @@ function basicPdfTextExtraction(base64Data) {
       '.score-wrap { display: flex; align-items: center; gap: 14px; margin-bottom: 4px; }' +
       '.score-ring {' +
         'width: 96px; height: 96px; border-radius: 50%;' +
-        'background: conic-gradient(#2563eb 0deg, rgba(0,64,80,0.12) 0);' +
+        'background: conic-gradient(#0369a1 0deg, rgba(3, 105, 161, 0.12) 0);' +
         'display: grid; place-items: center; position: relative; flex-shrink: 0;' +
       '}' +
       '.score-inner {' +
@@ -1728,20 +1849,20 @@ function basicPdfTextExtraction(base64Data) {
 
       '.pill-row { display: flex; flex-wrap: wrap; gap: 6px; min-height: 8px; }' +
       '.pill { padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 500; white-space: nowrap; }' +
-      '.pill-match { background: rgba(0, 204, 97, 0.14); color: #047857; }' +
+      '.pill-match { background: rgba(22, 163, 74, 0.14); color: #15803d; }' +
       '.pill-miss  { background: rgba(245, 158, 11, 0.15); color: #b45309; }' +
       '.pill-row:empty::before { content: "\u2014"; color: #cbd5e1; font-size: 12px; }' +
 
       '.sug-list { list-style: none; padding: 0; margin: 0; }' +
       '.sug-list li { font-size: 12px; line-height: 1.5; color: #334155; padding: 6px 0 6px 20px; position: relative; }' +
-      '.sug-list li::before { content: "\u2192"; position: absolute; left: 0; top: 6px; color: #2563eb; font-weight: 700; }' +
+      '.sug-list li::before { content: "\u2192"; position: absolute; left: 0; top: 6px; color: #0369a1; font-weight: 700; }' +
 
       '.save-status {' +
         'margin-top: 8px; padding: 6px 10px; border-radius: 6px;' +
         'font-size: 11px; text-align: center;' +
       '}' +
-      '.save-status.saving { background: rgba(37,99,235,0.1); color: #1e40af; }' +
-      '.save-status.synced { background: rgba(0,204,97,0.1); color: #047857; }' +
+      '.save-status.saving { background: rgba(3,105,161,0.1); color: #075985; }' +
+      '.save-status.synced { background: rgba(22,163,74,0.1); color: #15803d; }' +
       '.save-status.local { background: rgba(245,158,11,0.1); color: #b45309; }' +
 
       '.saved-jobs-list { max-height: 200px; overflow-y: auto; }' +
@@ -1775,7 +1896,7 @@ function basicPdfTextExtraction(base64Data) {
         'padding: 10px 0; cursor: pointer; display: flex; justify-content: space-between;' +
         'align-items: center; font-size: 13px; font-weight: 600; color: #0f172a;' +
       '}' +
-      '.accordion-header:hover { color: #2563eb; }' +
+      '.accordion-header:hover { color: #0369a1; }' +
       '.accordion-body { max-height: 0; overflow: hidden; transition: max-height 0.25s ease; }' +
       '.accordion-body.open { max-height: 1000px; }' +
       '.accordion-header .chev { transition: transform 0.2s; font-size: 11px; color: #64748b; }' +
@@ -1789,7 +1910,7 @@ function basicPdfTextExtraction(base64Data) {
       '}' +
       '.priority-high { background: rgba(239,68,68,0.12); color: #dc2626; }' +
       '.priority-medium { background: rgba(245,158,11,0.12); color: #d97706; }' +
-      '.priority-low { background: rgba(37,99,235,0.1); color: #2563eb; }' +
+      '.priority-low { background: rgba(3,105,161,0.1); color: #0369a1; }' +
       '.tip-text { font-size: 12px; color: #334155; line-height: 1.5; }' +
       '.tip-original { font-size: 11px; color: #94a3b8; margin-top: 4px; font-style: italic; }' +
 

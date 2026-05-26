@@ -9,15 +9,14 @@ var STORAGE = {
 };
 
 var DEFAULT_SETTINGS = {
-  apiEndpoint: "https://stoic-caiman-320.convex.site/v1/ats/analyze",
   mockMode: false,
   autoOpenEditor: true
 };
 
-// LOCAL DEV: http://localhost:8000
-// PRODUCTION: https://stoic-caiman-320.convex.site
-var API_BASE = "https://stoic-caiman-320.convex.site";
-var WEB_BASE = "http://localhost:3000";
+var _cfg = (typeof globalThis !== "undefined" && globalThis.__RESUMOD_CONFIG__) || {};
+var API_BASE = _cfg.API_BASE || "https://canny-woodpecker-211.convex.site";
+var WEB_BASE = _cfg.WEB_BASE || "http://localhost:3000";
+var LOCAL_PDF_API = _cfg.LOCAL_PDF_API || "http://localhost:8000";
 
 chrome.runtime.onInstalled.addListener(async function () {
   var cur = await chrome.storage.local.get([STORAGE.settings]);
@@ -110,9 +109,19 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
           sendResponse({ ok: true, data: result });
           break;
         }
+        case "UPLOAD_RESUME": {
+          var uploadResult = await uploadResumeToCloud(msg.payload || {});
+          sendResponse({ ok: true, data: uploadResult });
+          break;
+        }
         case "FETCH_JOBS": {
           var jobs = await fetchSavedJobs();
           sendResponse({ ok: true, data: jobs });
+          break;
+        }
+        case "FETCH_RESUMES": {
+          var cloudResumes = await fetchCloudResumes();
+          sendResponse({ ok: true, data: cloudResumes });
           break;
         }
         case "DELETE_JOB": {
@@ -397,6 +406,7 @@ async function createDraft(payload) {
 
     await storeDraftLocally(data.draftId, {
       editorUrl: data.editorUrl,
+      draftId: data.draftId,
       jobTitle: payload.jobTitle,
       company: payload.company,
       createdAt: Date.now(),
@@ -429,7 +439,7 @@ async function getDraftStatus(draftId) {
 async function fetchUserProfile() {
   try {
     var headers = await authHeaders();
-    var res = await fetch(API_BASE + "/v1/resumes/me/profile", {
+    var res = await fetch(API_BASE + "/v1/auth/profile", {
       method: "GET",
       headers: headers
     });
@@ -437,6 +447,29 @@ async function fetchUserProfile() {
     return await res.json();
   } catch (e) {
     return null;
+  }
+}
+
+async function uploadResumeToCloud(payload) {
+  try {
+    var headers = await authHeaders();
+    var res = await fetch(API_BASE + "/v1/resumes/upload", {
+      method: "POST",
+      headers: headers,
+      body: JSON.stringify({
+        filename: payload.filename || "resume.txt",
+        mimeType: payload.mimeType,
+        fileSize: payload.fileSize,
+        rawText: payload.rawText,
+        textPreview: (payload.rawText || "").slice(0, 500),
+        label: payload.label || (payload.filename || "resume").replace(/\.[^/.]+$/, ""),
+      })
+    });
+    if (!res.ok) throw new Error("API " + res.status);
+    return await res.json();
+  } catch (err) {
+    queueForSync("upload_resume", payload);
+    throw err;
   }
 }
 
@@ -463,7 +496,8 @@ async function saveJob(jobData) {
         skills: jobData.skills,
         applyUrl: jobData.applyUrl,
         source: jobData.source,
-        pageUrl: jobData.pageUrl
+        pageUrl: jobData.pageUrl,
+        atsScore: jobData.atsScore
       })
     });
     if (!res.ok) {
@@ -474,6 +508,21 @@ async function saveJob(jobData) {
   } catch (err) {
     queueForSync("save_job", jobData);
     throw err;
+  }
+}
+
+async function fetchCloudResumes() {
+  try {
+    var headers = await authHeaders();
+    var res = await fetch(API_BASE + "/v1/resumes", {
+      method: "GET",
+      headers: headers
+    });
+    if (!res.ok) throw new Error("API " + res.status);
+    var data = await res.json();
+    return data.resumes || data;
+  } catch (err) {
+    return [];
   }
 }
 
@@ -641,7 +690,7 @@ async function callAnalyzeApi(settings, payload) {
     }
   } catch (e) { /* no auth, continue without */ }
 
-  var endpoint = settings.apiEndpoint || (API_BASE + "/v1/ats/analyze");
+  var endpoint = API_BASE + "/v1/ats/analyze";
   var res = await fetch(endpoint, {
     method: "POST",
     headers: headers,
@@ -725,9 +774,8 @@ async function parsePdfBase64(base64, tabId) {
 
   // Priority 1: FastAPI backend (has pdfplumber/PyMuPDF - best extraction)
   try {
-    var LOCAL_API = "http://localhost:8000";
-    console.log("Background: Trying FastAPI backend at", LOCAL_API + "/v1/pdf/extract");
-    var res = await fetch(LOCAL_API + "/v1/pdf/extract", {
+    console.log("Background: Trying FastAPI backend at", LOCAL_PDF_API + "/v1/pdf/extract");
+    var res = await fetch(LOCAL_PDF_API + "/v1/pdf/extract", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ base64: base64Data })
@@ -865,6 +913,8 @@ async function processSyncQueue() {
         await saveJob(item.payload);
       } else if (item.type === "create_draft") {
         await createDraft(item.payload);
+      } else if (item.type === "upload_resume") {
+        await uploadResumeToCloud(item.payload);
       }
     } catch (e) {
       item.retries = (item.retries || 0) + 1;

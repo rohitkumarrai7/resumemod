@@ -15,7 +15,7 @@
   }
 
   var STORAGE_KEY = "rf_auth";
-  var API_BASE = "https://stoic-caiman-320.convex.site";
+  var API_BASE = "https://canny-woodpecker-211.convex.site";
 
   statusEl.textContent = "Verifying your account...";
 
