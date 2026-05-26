@@ -2,11 +2,23 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
-import { useClerk } from "@clerk/nextjs";
 import { api } from "@/lib/api";
 import Link from "next/link";
 import { Logo, SpinnerCenter } from "@/components/ui";
 import { cn } from "@/lib/utils";
+
+async function signOutEverywhere(router: ReturnType<typeof useRouter>) {
+  await api.auth.logout();
+  const clerk = typeof window !== "undefined" ? (window as Window & { Clerk?: { signOut?: () => Promise<void> } }).Clerk : undefined;
+  if (clerk?.signOut) {
+    try {
+      await clerk.signOut();
+    } catch {
+      /* Clerk session may already be cleared */
+    }
+  }
+  router.push("/login");
+}
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" },
@@ -20,7 +32,6 @@ const NAV_ITEMS = [
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { signOut } = useClerk();
   const [user, setUser] = useState<any>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -86,10 +97,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <div className="text-xs text-muted truncate">{user?.email}</div>
           </div>
           <button
-            onClick={async () => {
-              await api.auth.logout();
-              await signOut({ redirectUrl: "/login" });
-            }}
+            onClick={() => signOutEverywhere(router)}
             className="text-muted hover:text-foreground text-xs flex-shrink-0"
           >
             Sign out
