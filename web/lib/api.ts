@@ -136,6 +136,10 @@ export const api = {
     },
     getUser: () => getStoredUser(),
     isLoggedIn: () => !!getToken(),
+    updateStoredTier: (tier: string) => {
+      const user = getStoredUser();
+      if (user) setUser({ ...user, tier });
+    },
     getProfile: async () => {
       const res = await apiFetch("/v1/auth/profile");
       if (!res.ok) throw new Error("Failed to fetch profile");

@@ -17,12 +17,15 @@ export default defineSchema({
     tailorsResetAt: v.optional(v.number()),
     stripeCustomerId: v.optional(v.string()),
     stripeSubscriptionId: v.optional(v.string()),
+    razorpayCustomerId: v.optional(v.string()),
+    razorpaySubscriptionId: v.optional(v.string()),
     onboardingCompleted: v.optional(v.boolean()),
   })
     .index("by_email", ["email"])
     .index("by_clerk", ["clerkId"])
     .index("by_tier", ["tier"])
-    .index("by_stripe_customer", ["stripeCustomerId"]),
+    .index("by_stripe_customer", ["stripeCustomerId"])
+    .index("by_razorpay_customer", ["razorpayCustomerId"]),
 
   resumes: defineTable({
     userId: v.id("users"),
@@ -183,4 +186,17 @@ export default defineSchema({
     type: v.string(),
     metadata: v.optional(v.any()),
   }).index("by_user", ["userId"]),
+
+  payments: defineTable({
+    userId: v.id("users"),
+    razorpayPaymentId: v.string(),
+    razorpayOrderId: v.optional(v.string()),
+    tier: v.string(),
+    amount: v.optional(v.number()),
+    currency: v.optional(v.string()),
+    status: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_razorpay_payment", ["razorpayPaymentId"])
+    .index("by_user", ["userId"]),
 });

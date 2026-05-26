@@ -226,6 +226,7 @@ export const getProfile = query({
     const limits = {
       free: { analyses: 5, compilations: 2, drafts: 2 },
       pro: { analyses: 50, compilations: 20, drafts: 10 },
+      premium: { analyses: 999, compilations: 999, drafts: 50 },
       team: { analyses: 999, compilations: 999, drafts: 50 },
     };
     const l = limits[user.tier as keyof typeof limits] || limits.free;

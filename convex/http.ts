@@ -608,6 +608,37 @@ http.route({
   }),
 });
 
+// ─── Billing (Razorpay) ────────────────────────────────────────────────────────
+
+http.route({
+  path: "/v1/billing/razorpay",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    try {
+      const body = await request.json();
+      if (!body.internalSecret || !body.tier || !body.razorpayPaymentId) {
+        return jsonResponse(request, { detail: "Missing required fields" }, 400);
+      }
+      const result = await ctx.runMutation(api.billing.updateTierFromPayment, {
+        internalSecret: body.internalSecret,
+        clerkId: body.clerkId,
+        userId: body.userId,
+        email: body.email,
+        tier: body.tier,
+        razorpayPaymentId: body.razorpayPaymentId,
+        razorpayOrderId: body.razorpayOrderId,
+        razorpaySubscriptionId: body.razorpaySubscriptionId,
+        amount: body.amount,
+        currency: body.currency,
+      });
+      return jsonResponse(request, result);
+    } catch (e: any) {
+      const status = e.message === "Unauthorized" ? 401 : 400;
+      return jsonResponse(request, { detail: e.message || "Billing sync failed" }, status);
+    }
+  }),
+});
+
 // ─── Templates ─────────────────────────────────────────────────────────────────
 
 http.route({
