@@ -51,9 +51,12 @@ export const list = query({
       mimeType: r.mimeType,
       fileSize: r.fileSize,
       textPreview: r.textPreview,
+      rawText: r.rawText,
       structuredData: r.structuredData,
       label: r.label,
+      profileRole: r.profileRole,
       isDefault: r.isDefault,
+      lastAtsScore: r.lastAtsScore,
       createdAt: r._creationTime,
     }));
   },
@@ -96,9 +99,37 @@ export const setDefault = mutation({
   },
 });
 
-export const remove = mutation({
-  args: { resumeId: v.id("resumes") },
+export const update = mutation({
+  args: {
+    resumeId: v.id("resumes"),
+    userId: v.id("users"),
+    label: v.optional(v.string()),
+    profileRole: v.optional(v.string()),
+    lastAtsScore: v.optional(v.number()),
+  },
   handler: async (ctx, args) => {
+    const resume = await ctx.db.get(args.resumeId);
+    if (!resume || resume.userId !== args.userId) {
+      throw new Error("Resume not found");
+    }
+    const patch: Record<string, string | number> = {};
+    if (args.label !== undefined) patch.label = args.label;
+    if (args.profileRole !== undefined) patch.profileRole = args.profileRole;
+    if (args.lastAtsScore !== undefined) patch.lastAtsScore = args.lastAtsScore;
+    if (Object.keys(patch).length > 0) {
+      await ctx.db.patch(args.resumeId, patch);
+    }
+    return { ok: true };
+  },
+});
+
+export const remove = mutation({
+  args: { resumeId: v.id("resumes"), userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const resume = await ctx.db.get(args.resumeId);
+    if (!resume || resume.userId !== args.userId) {
+      throw new Error("Resume not found");
+    }
     await ctx.db.delete(args.resumeId);
     return { ok: true };
   },

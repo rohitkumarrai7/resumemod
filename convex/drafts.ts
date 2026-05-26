@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { scoreResumeAgainstJD } from "./atsScoring";
+import { parseResumeText, buildSuggestions } from "./resumeParser";
 
 const NON_SKILL_KW = new Set([
   "development", "ai-generated", "modern", "optimization", "improve",
@@ -233,6 +234,7 @@ export const create = mutation({
 
     if (existingJobs) {
       jobId = existingJobs._id;
+      await ctx.db.patch(jobId, { stage: "tailored", status: "tailored" });
     } else {
       jobId = await ctx.db.insert("jobs", {
         userId: args.userId,
@@ -242,7 +244,8 @@ export const create = mutation({
         description: args.jobDescription,
         pageUrl: args.jobUrl || "",
         source: args.source,
-        status: "saved",
+        status: "tailored",
+        stage: "tailored",
       });
     }
 
@@ -259,72 +262,20 @@ export const create = mutation({
     const matchedKw = args.localMatched || [];
     const missingKw = args.localMissing || [];
 
-    let generatedLatex = "";
-    if (resumeText) {
-      generatedLatex = generateLatexFromResume(
-        resumeText,
-        args.jobTitle || "",
-        args.company || "",
-        missingKw,
-        matchedKw
-      );
-    } else {
-      generatedLatex = `\\documentclass[11pt,a4paper]{article}
-\\usepackage[utf8]{inputenc}
-\\usepackage[T1]{fontenc}
-\\usepackage{lmodern}
-\\usepackage[margin=0.75in]{geometry}
-\\usepackage{enumitem}
-\\usepackage{titlesec}
-\\usepackage{xcolor}
-\\usepackage{hyperref}
+    const structuredResume = resumeText ? parseResumeText(resumeText) : null;
+    const aiSuggestions = structuredResume
+      ? buildSuggestions(structuredResume, missingKw, args.localSuggestions || [])
+      : [];
 
-\\definecolor{heading}{HTML}{1E3A5F}
-\\titleformat{\\section}{\\large\\bfseries\\color{heading}}{}{0em}{}[\\titlerule]
-\\pagestyle{empty}
-\\setlength{\\parindent}{0pt}
-
-\\begin{document}
-
-\\begin{center}
-  {\\LARGE\\bfseries Your Name}\\\\[4pt]
-  {\\small your.email@example.com}
-\\end{center}
-
-\\section{Professional Summary}
-Replace this with your professional summary. Tailor it to the ${args.jobTitle || "target"} role${args.company ? ` at ${args.company}` : ""}.
-
-\\section{Experience}
-\\begin{itemize}[leftmargin=*]
-  \\item \\textbf{Job Title} \\hfill Date Range \\\\
-        Company Name - Describe your achievements with quantifiable metrics.
-\\end{itemize}
-
-\\section{Education}
-\\begin{itemize}[leftmargin=*]
-  \\item \\textbf{Degree} \\hfill Year \\\\
-        University Name
-\\end{itemize}
-
-\\section{Skills}
-${missingKw.length > 0 ? missingKw.slice(0, 10).join(", ") : "Add your relevant skills here"}
-
-\\end{document}`;
-    }
-
-    const atsResult = scoreResumeAgainstJD(generatedLatex, args.jobDescription);
+    const resumeTextForScore = resumeText || "";
+    const atsResult = scoreResumeAgainstJD(resumeTextForScore, args.jobDescription);
     const optimizedScore = atsResult.overallScore;
 
     const gapAnalysis = {
       missingKeywords: missingKw.slice(0, 10),
       matchedKeywords: matchedKw,
-      suggestions: [
-        ...(args.localSuggestions || []).map((s: any) => typeof s === "string" ? s : s.message || s.tip || String(s)),
-        ...atsResult.suggestions.map((s: any) => s.message || s),
-      ],
-      optimizedKeywords: [...missingKw.slice(0, 8)].filter(
-        (kw) => !matchedKw.includes(kw)
-      ),
+      suggestions: aiSuggestions.map((s) => s.suggestedText),
+      optimizedKeywords: [...missingKw.slice(0, 8)].filter((kw) => !matchedKw.includes(kw)),
     };
 
     const draftId = await ctx.db.insert("drafts", {
@@ -341,10 +292,12 @@ ${missingKw.length > 0 ? missingKw.slice(0, 10).join(", ") : "Add your relevant 
         gapAnalysis,
         resumeOriginalText: resumeText.slice(0, 10000),
         localSuggestions: args.localSuggestions || [],
+        structuredResume,
+        aiSuggestions,
       },
       originalLatex: "",
-      currentLatex: generatedLatex,
-      initialScore,
+      currentLatex: "",
+      initialScore: initialScore || atsResult.overallScore,
       currentScore: optimizedScore,
       status: "ready",
       expiresAt: Date.now() + 24 * 60 * 60 * 1000,
@@ -393,6 +346,8 @@ export const get = query({
       context: {
         resume,
         job,
+        structuredResume: rawContext.structuredResume || null,
+        aiSuggestions: rawContext.aiSuggestions || [],
         analysis: {
           initialScore: draft.initialScore,
           currentScore: draft.currentScore,
@@ -454,6 +409,29 @@ export const compileLatex = mutation({
       ),
       suggestions: atsResult.suggestions || [],
     };
+  },
+});
+
+export const updateStructured = mutation({
+  args: {
+    draftId: v.id("drafts"),
+    structuredResume: v.any(),
+    aiSuggestions: v.any(),
+    currentScore: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const draft = await ctx.db.get(args.draftId);
+    if (!draft) throw new Error("Draft not found");
+    const ctxData = (draft.context as Record<string, unknown>) || {};
+    await ctx.db.patch(args.draftId, {
+      currentScore: args.currentScore,
+      context: {
+        ...ctxData,
+        structuredResume: args.structuredResume,
+        aiSuggestions: args.aiSuggestions,
+      },
+    });
+    return { ok: true };
   },
 });
 

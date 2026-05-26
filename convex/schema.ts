@@ -9,12 +9,20 @@ export default defineSchema({
     avatarUrl: v.optional(v.string()),
     tier: v.string(),
     googleId: v.optional(v.string()),
+    clerkId: v.optional(v.string()),
     linkedinId: v.optional(v.string()),
     analysesCount: v.number(),
     compilationsCount: v.number(),
+    tailorsThisMonth: v.optional(v.number()),
+    tailorsResetAt: v.optional(v.number()),
+    stripeCustomerId: v.optional(v.string()),
+    stripeSubscriptionId: v.optional(v.string()),
+    onboardingCompleted: v.optional(v.boolean()),
   })
     .index("by_email", ["email"])
-    .index("by_tier", ["tier"]),
+    .index("by_clerk", ["clerkId"])
+    .index("by_tier", ["tier"])
+    .index("by_stripe_customer", ["stripeCustomerId"]),
 
   resumes: defineTable({
     userId: v.id("users"),
@@ -27,6 +35,9 @@ export default defineSchema({
     rawText: v.optional(v.string()),
     label: v.string(),
     isDefault: v.boolean(),
+    profileRole: v.optional(v.string()),
+    sections: v.optional(v.any()),
+    lastAtsScore: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     .index("by_user_default", ["userId", "isDefault"]),
@@ -47,10 +58,16 @@ export default defineSchema({
     status: v.string(),
     appliedAt: v.optional(v.number()),
     notes: v.optional(v.string()),
+    contactName: v.optional(v.string()),
+    contactEmail: v.optional(v.string()),
+    deadline: v.optional(v.number()),
+    stage: v.optional(v.string()),
+    atsScore: v.optional(v.number()),
   })
     .index("by_user", ["userId"])
     .index("by_user_status", ["userId", "status"])
-    .index("by_user_source", ["userId", "source"]),
+    .index("by_user_source", ["userId", "source"])
+    .index("by_user_stage", ["userId", "stage"]),
 
   drafts: defineTable({
     userId: v.id("users"),
@@ -75,9 +92,11 @@ export default defineSchema({
     draftId: v.optional(v.id("drafts")),
     label: v.string(),
     latexSource: v.string(),
+    structuredJson: v.optional(v.any()),
     compiledPdfStorageId: v.optional(v.id("_storage")),
     atsScore: v.optional(v.number()),
     changesLog: v.optional(v.any()),
+    templateId: v.optional(v.string()),
   }).index("by_user", ["userId"]),
 
   atsAnalyses: defineTable({
@@ -103,4 +122,65 @@ export default defineSchema({
     .index("by_token", ["token"])
     .index("by_refresh", ["refreshToken"])
     .index("by_user", ["userId"]),
+
+  // ─── New tables for SaaS features ───────────────────────────────────────────
+
+  tailoringRuns: defineTable({
+    userId: v.id("users"),
+    resumeId: v.optional(v.id("resumes")),
+    jobId: v.optional(v.id("jobs")),
+    status: v.string(),
+    provider: v.optional(v.string()),
+    scoreBefore: v.number(),
+    scoreAfter: v.optional(v.number()),
+    suggestions: v.optional(v.any()),
+    latexSource: v.optional(v.string()),
+    completedAt: v.optional(v.number()),
+    latencyMs: v.optional(v.number()),
+    error: v.optional(v.string()),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_status", ["userId", "status"]),
+
+  templates: defineTable({
+    name: v.string(),
+    slug: v.string(),
+    category: v.string(),
+    engine: v.string(),
+    thumbnail: v.optional(v.string()),
+    colors: v.optional(v.array(v.string())),
+    fonts: v.optional(v.array(v.string())),
+    spacing: v.optional(v.string()),
+    sectionOrder: v.optional(v.array(v.string())),
+    latexTemplate: v.optional(v.string()),
+    isActive: v.boolean(),
+  })
+    .index("by_slug", ["slug"])
+    .index("by_category", ["category"]),
+
+  coverLetters: defineTable({
+    userId: v.id("users"),
+    jobId: v.optional(v.id("jobs")),
+    resumeVersionId: v.optional(v.id("resumeVersions")),
+    tone: v.string(),
+    content: v.string(),
+    status: v.string(),
+  }).index("by_user", ["userId"]),
+
+  exports: defineTable({
+    userId: v.id("users"),
+    resumeVersionId: v.optional(v.id("resumeVersions")),
+    format: v.string(),
+    storageId: v.optional(v.id("_storage")),
+    status: v.string(),
+    error: v.optional(v.string()),
+  })
+    .index("by_user", ["userId"])
+    .index("by_version", ["resumeVersionId"]),
+
+  usageEvents: defineTable({
+    userId: v.id("users"),
+    type: v.string(),
+    metadata: v.optional(v.any()),
+  }).index("by_user", ["userId"]),
 });

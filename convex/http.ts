@@ -4,15 +4,30 @@ import { api } from "./_generated/api";
 import { scoreResumeAgainstJD } from "./atsScoring";
 
 const http = httpRouter();
+const ALLOWED_ORIGINS = [
+  "http://localhost:3000",
+  "https://resumod.vercel.app",
+];
 
-function jsonResponse(data: any, status = 200) {
+function getAllowedOrigin(request: Request): string {
+  const origin = request.headers.get("Origin") || "";
+  if (ALLOWED_ORIGINS.includes(origin)) return origin;
+  if (origin.startsWith("chrome-extension://")) return origin;
+  if (/^http:\/\/localhost(:\d+)?$/.test(origin)) return origin;
+  if (/^http:\/\/127\.0\.0\.1(:\d+)?$/.test(origin)) return origin;
+  return ALLOWED_ORIGINS[0];
+}
+
+function jsonResponse(request: Request, data: unknown, status = 200) {
+  const origin = getAllowedOrigin(request);
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": "GET, POST, PATCH, PUT, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Vary": "Origin",
     },
   });
 }
@@ -38,13 +53,20 @@ function extractPathParam(url: string, segmentName: string): string {
   return parts[parts.length - 1];
 }
 
+function isResumeItemPath(url: string): boolean {
+  const path = new URL(url).pathname;
+  if (!path.startsWith("/v1/resumes/")) return false;
+  const rest = path.slice("/v1/resumes/".length);
+  return rest.length > 0 && rest !== "upload";
+}
+
 // ─── Health ────────────────────────────────────────────────────────────────────
 
 http.route({
   path: "/health",
   method: "GET",
-  handler: httpAction(async () => {
-    return jsonResponse({ status: "ok", version: "2.0.0", backend: "convex" });
+  handler: httpAction(async (_ctx, request) => {
+    return jsonResponse(request, { status: "ok", version: "2.0.0", backend: "convex" });
   }),
 });
 
@@ -57,18 +79,18 @@ http.route({
     try {
       const body = await request.json();
       if (!body.email || !body.password || !body.name) {
-        return jsonResponse({ detail: "Email, password, and name are required" }, 400);
+        return jsonResponse(request, { detail: "Email, password, and name are required" }, 400);
       }
       const result = await ctx.runMutation(api.auth.register, {
         email: body.email,
         password: body.password,
         name: body.name,
       });
-      return jsonResponse(result);
+      return jsonResponse(request, result);
     } catch (e: any) {
       const msg = e.message || "Registration failed";
       const status = msg.includes("already registered") ? 409 : 400;
-      return jsonResponse({ detail: msg }, status);
+      return jsonResponse(request, { detail: msg }, status);
     }
   }),
 });
@@ -80,15 +102,15 @@ http.route({
     try {
       const body = await request.json();
       if (!body.email || !body.password) {
-        return jsonResponse({ detail: "Email and password are required" }, 400);
+        return jsonResponse(request, { detail: "Email and password are required" }, 400);
       }
       const result = await ctx.runMutation(api.auth.login, {
         email: body.email,
         password: body.password,
       });
-      return jsonResponse(result);
+      return jsonResponse(request, result);
     } catch (e: any) {
-      return jsonResponse({ detail: e.message || "Invalid email or password" }, 401);
+      return jsonResponse(request, { detail: e.message || "Invalid email or password" }, 401);
     }
   }),
 });
@@ -102,9 +124,9 @@ http.route({
       const result = await ctx.runMutation(api.auth.refreshToken, {
         refreshToken: body.refreshToken,
       });
-      return jsonResponse(result);
+      return jsonResponse(request, result);
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 401);
+      return jsonResponse(request, { detail: e.message }, 401);
     }
   }),
 });
@@ -115,11 +137,11 @@ http.route({
   handler: httpAction(async (ctx, request) => {
     try {
       const token = extractBearer(request);
-      if (!token) return jsonResponse({ detail: "Unauthorized" }, 401);
+      if (!token) return jsonResponse(request, { detail: "Unauthorized" }, 401);
       const profile = await ctx.runQuery(api.auth.getProfile, { token });
-      return jsonResponse(profile);
+      return jsonResponse(request, profile);
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 401);
+      return jsonResponse(request, { detail: e.message }, 401);
     }
   }),
 });
@@ -130,11 +152,50 @@ http.route({
   handler: httpAction(async (ctx, request) => {
     try {
       const token = extractBearer(request);
-      if (!token) return jsonResponse({ detail: "Unauthorized" }, 401);
+      if (!token) return jsonResponse(request, { detail: "Unauthorized" }, 401);
       await ctx.runMutation(api.auth.logout, { token });
-      return jsonResponse({ ok: true });
+      return jsonResponse(request, { ok: true });
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 400);
+      return jsonResponse(request, { detail: e.message }, 400);
+    }
+  }),
+});
+
+
+http.route({
+  path: "/v1/auth/onboarding/complete",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    try {
+      const token = extractBearer(request);
+      if (!token) return jsonResponse(request, { detail: "Unauthorized" }, 401);
+      await ctx.runMutation(api.auth.completeOnboarding, { token });
+      return jsonResponse(request, { ok: true });
+    } catch (e: any) {
+      return jsonResponse(request, { detail: e.message || "Unauthorized" }, 401);
+    }
+  }),
+});
+
+http.route({
+  path: "/v1/auth/clerk-sync",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    try {
+      const body = await request.json();
+      if (!body.syncSecret || !body.clerkId || !body.email) {
+        return jsonResponse(request, { detail: "Missing required fields" }, 400);
+      }
+      const result = await ctx.runMutation(api.auth.clerkSync, {
+        syncSecret: body.syncSecret,
+        clerkId: body.clerkId,
+        email: body.email,
+        name: body.name,
+      });
+      return jsonResponse(request, result);
+    } catch (e: any) {
+      const status = e.message === "Unauthorized" ? 401 : 400;
+      return jsonResponse(request, { detail: e.message || "Clerk sync failed" }, status);
     }
   }),
 });
@@ -147,12 +208,12 @@ http.route({
   handler: httpAction(async (ctx, request) => {
     try {
       const token = extractBearer(request);
-      if (!token) return jsonResponse({ detail: "Unauthorized" }, 401);
+      if (!token) return jsonResponse(request, { detail: "Unauthorized" }, 401);
       const profile = await ctx.runQuery(api.auth.getProfile, { token });
       const resumes = await ctx.runQuery(api.resumes.list, { userId: profile.id as any });
-      return jsonResponse({ resumes });
+      return jsonResponse(request, { resumes });
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 401);
+      return jsonResponse(request, { detail: e.message }, 401);
     }
   }),
 });
@@ -163,7 +224,7 @@ http.route({
   handler: httpAction(async (ctx, request) => {
     try {
       const token = extractBearer(request);
-      if (!token) return jsonResponse({ detail: "Unauthorized" }, 401);
+      if (!token) return jsonResponse(request, { detail: "Unauthorized" }, 401);
       const profile = await ctx.runQuery(api.auth.getProfile, { token });
       const body = await request.json();
 
@@ -178,25 +239,68 @@ http.route({
         label: body.label,
       });
 
-      return jsonResponse({ id: resumeId, ok: true });
+      return jsonResponse(request, { id: resumeId, ok: true });
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 400);
+      return jsonResponse(request, { detail: e.message }, 400);
     }
   }),
 });
 
 http.route({
-  path: "/v1/resumes/{resumeId}",
-  method: "DELETE",
+  pathPrefix: "/v1/resumes/",
+  method: "PATCH",
   handler: httpAction(async (ctx, request) => {
+    if (!isResumeItemPath(request.url)) {
+      return jsonResponse(request, { detail: "Not found" }, 404);
+    }
     try {
       const token = extractBearer(request);
-      if (!token) return jsonResponse({ detail: "Unauthorized" }, 401);
+      if (!token) return jsonResponse(request, { detail: "Unauthorized" }, 401);
+      const profile = await ctx.runQuery(api.auth.getProfile, { token });
+      const body = await request.json();
       const resumeId = extractPathParam(request.url, "resumes") as any;
-      await ctx.runMutation(api.resumes.remove, { resumeId });
-      return jsonResponse({ ok: true });
+
+      await ctx.runMutation(api.resumes.update, {
+        resumeId,
+        userId: profile.id as any,
+        label: body.label,
+        profileRole: body.profileRole,
+        lastAtsScore: body.lastAtsScore,
+      });
+
+      if (body.setDefault) {
+        await ctx.runMutation(api.resumes.setDefault, {
+          resumeId,
+          userId: profile.id as any,
+        });
+      }
+
+      return jsonResponse(request, { ok: true });
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 400);
+      return jsonResponse(request, { detail: e.message }, 400);
+    }
+  }),
+});
+
+http.route({
+  pathPrefix: "/v1/resumes/",
+  method: "DELETE",
+  handler: httpAction(async (ctx, request) => {
+    if (!isResumeItemPath(request.url)) {
+      return jsonResponse(request, { detail: "Not found" }, 404);
+    }
+    try {
+      const token = extractBearer(request);
+      if (!token) return jsonResponse(request, { detail: "Unauthorized" }, 401);
+      const profile = await ctx.runQuery(api.auth.getProfile, { token });
+      const resumeId = extractPathParam(request.url, "resumes") as any;
+      await ctx.runMutation(api.resumes.remove, {
+        resumeId,
+        userId: profile.id as any,
+      });
+      return jsonResponse(request, { ok: true });
+    } catch (e: any) {
+      return jsonResponse(request, { detail: e.message }, 400);
     }
   }),
 });
@@ -209,7 +313,7 @@ http.route({
   handler: httpAction(async (ctx, request) => {
     try {
       const token = extractBearer(request);
-      if (!token) return jsonResponse({ detail: "Unauthorized" }, 401);
+      if (!token) return jsonResponse(request, { detail: "Unauthorized" }, 401);
       const profile = await ctx.runQuery(api.auth.getProfile, { token });
       const url = new URL(request.url);
       const status = url.searchParams.get("status") || undefined;
@@ -219,9 +323,9 @@ http.route({
         status,
         source,
       });
-      return jsonResponse({ jobs });
+      return jsonResponse(request, { jobs });
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 401);
+      return jsonResponse(request, { detail: e.message }, 401);
     }
   }),
 });
@@ -232,7 +336,7 @@ http.route({
   handler: httpAction(async (ctx, request) => {
     try {
       const token = extractBearer(request);
-      if (!token) return jsonResponse({ detail: "Unauthorized" }, 401);
+      if (!token) return jsonResponse(request, { detail: "Unauthorized" }, 401);
       const profile = await ctx.runQuery(api.auth.getProfile, { token });
       const body = await request.json();
       const jobId = await ctx.runMutation(api.jobs.save, {
@@ -247,43 +351,49 @@ http.route({
         applyUrl: body.applyUrl,
         pageUrl: body.pageUrl,
         source: body.source,
+        atsScore: body.atsScore,
       });
-      return jsonResponse({ id: jobId, ok: true });
+      return jsonResponse(request, { id: jobId, ok: true });
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 400);
+      return jsonResponse(request, { detail: e.message }, 400);
     }
   }),
 });
 
 http.route({
-  path: "/v1/jobs/{jobId}",
+  pathPrefix: "/v1/jobs/",
   method: "PATCH",
   handler: httpAction(async (ctx, request) => {
     try {
       const token = extractBearer(request);
-      if (!token) return jsonResponse({ detail: "Unauthorized" }, 401);
+      if (!token) return jsonResponse(request, { detail: "Unauthorized" }, 401);
       const body = await request.json();
       const jobId = extractPathParam(request.url, "jobs") as any;
-      await ctx.runMutation(api.jobs.updateStatus, { jobId, status: body.status, notes: body.notes });
-      return jsonResponse({ ok: true });
+      await ctx.runMutation(api.jobs.updateStatus, {
+        jobId,
+        status: body.status,
+        stage: body.stage,
+        notes: body.notes,
+      });
+      return jsonResponse(request, { ok: true });
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 400);
+      return jsonResponse(request, { detail: e.message }, 400);
     }
   }),
 });
 
 http.route({
-  path: "/v1/jobs/{jobId}",
+  pathPrefix: "/v1/jobs/",
   method: "DELETE",
   handler: httpAction(async (ctx, request) => {
     try {
       const token = extractBearer(request);
-      if (!token) return jsonResponse({ detail: "Unauthorized" }, 401);
+      if (!token) return jsonResponse(request, { detail: "Unauthorized" }, 401);
       const jobId = extractPathParam(request.url, "jobs") as any;
       await ctx.runMutation(api.jobs.remove, { jobId });
-      return jsonResponse({ ok: true });
+      return jsonResponse(request, { ok: true });
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 400);
+      return jsonResponse(request, { detail: e.message }, 400);
     }
   }),
 });
@@ -336,7 +446,7 @@ http.route({
 
       const baseEditorUrl = "http://localhost:3000";
 
-      return jsonResponse({
+      return jsonResponse(request, {
         draftId: result.draftId,
         editorUrl: `${baseEditorUrl}/editor?draft=${result.draftId}`,
         status: "optimizing",
@@ -344,7 +454,7 @@ http.route({
         estimatedSeconds: result.estimatedSeconds,
       });
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 400);
+      return jsonResponse(request, { detail: e.message }, 400);
     }
   }),
 });
@@ -357,9 +467,9 @@ http.route({
       // Draft ID itself serves as the access key (unguessable random ID)
       const draftId = extractPathParam(request.url, "drafts") as any;
       const draft = await ctx.runQuery(api.drafts.get, { draftId });
-      return jsonResponse(draft);
+      return jsonResponse(request, draft);
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 404);
+      return jsonResponse(request, { detail: e.message }, 404);
     }
   }),
 });
@@ -375,9 +485,9 @@ http.route({
         draftId,
         latexSource: body.latexSource,
       });
-      return jsonResponse(result);
+      return jsonResponse(request, result);
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 400);
+      return jsonResponse(request, { detail: e.message }, 400);
     }
   }),
 });
@@ -393,9 +503,9 @@ http.route({
         draftId,
         label: body.label,
       });
-      return jsonResponse(result);
+      return jsonResponse(request, result);
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 400);
+      return jsonResponse(request, { detail: e.message }, 400);
     }
   }),
 });
@@ -413,7 +523,7 @@ http.route({
       const resumeText = body.resumeText || "";
       const secScore = sectionCompletenessScore(resumeText);
 
-      return jsonResponse({
+      return jsonResponse(request, {
         score: result.overallScore,
         maxPossibleScore: 100,
         breakdown: {
@@ -428,7 +538,7 @@ http.route({
         estimatedAtsPassRate: result.overallScore >= 75 ? "high" : result.overallScore >= 50 ? "medium" : "low",
       });
     } catch (e: any) {
-      return jsonResponse({ detail: e.message }, 400);
+      return jsonResponse(request, { detail: e.message }, 400);
     }
   }),
 });
@@ -459,7 +569,7 @@ http.route({
 
       const apiKey = (globalThis as any).process?.env?.OPENAI_API_KEY || "";
       if (!apiKey) {
-        return jsonResponse(
+        return jsonResponse(request, 
           { error: "AI service not configured. Set OPENAI_API_KEY in Convex env.", content: "" },
           503
         );
@@ -482,7 +592,7 @@ http.route({
       if (!openaiRes.ok) {
         const errBody = await openaiRes.text().catch(() => "");
         console.error("OpenAI API error:", openaiRes.status, errBody);
-        return jsonResponse(
+        return jsonResponse(request, 
           { error: `OpenAI API error: ${openaiRes.status}`, content: "" },
           502
         );
@@ -490,10 +600,40 @@ http.route({
 
       const data = await openaiRes.json();
       const content = data.choices?.[0]?.message?.content || "";
-      return jsonResponse({ content, usage: data.usage });
+      return jsonResponse(request, { content, usage: data.usage });
     } catch (error: any) {
       console.error("AI generate error:", error);
-      return jsonResponse({ error: error.message, content: "" }, 500);
+      return jsonResponse(request, { error: error.message, content: "" }, 500);
+    }
+  }),
+});
+
+// ─── Templates ─────────────────────────────────────────────────────────────────
+
+http.route({
+  path: "/v1/templates",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    try {
+      const url = new URL(request.url);
+      const category = url.searchParams.get("category") || undefined;
+      const templates = await ctx.runQuery(api.templates.list, { category });
+      return jsonResponse(request, { templates });
+    } catch (e: any) {
+      return jsonResponse(request, { detail: e.message || "Failed to list templates" }, 400);
+    }
+  }),
+});
+
+http.route({
+  path: "/v1/templates/seed",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    try {
+      const result = await ctx.runMutation(api.templates.seed, {});
+      return jsonResponse(request, result);
+    } catch (e: any) {
+      return jsonResponse(request, { detail: e.message || "Failed to seed templates" }, 400);
     }
   }),
 });
@@ -509,7 +649,7 @@ http.route({
       const base64 = body.base64 || "";
 
       if (!base64) {
-        return jsonResponse({ error: "Missing base64 data" }, 400);
+        return jsonResponse(request, { error: "Missing base64 data" }, 400);
       }
 
       const base64Data = base64.replace(/^data:application\/pdf;base64,/, "");
@@ -554,13 +694,13 @@ http.route({
 
       if (allText.length > 50) {
         console.log("PDF parse success (basic extraction):", allText.length, "chars");
-        return jsonResponse({ text: allText });
+        return jsonResponse(request, { text: allText });
       }
 
-      return jsonResponse({ text: "", error: "No extractable text found in PDF" });
+      return jsonResponse(request, { text: "", error: "No extractable text found in PDF" });
     } catch (error: any) {
       console.error("PDF parse error:", error);
-      return jsonResponse({ text: "", error: error.message });
+      return jsonResponse(request, { text: "", error: error.message });
     }
   }),
 });
@@ -571,7 +711,8 @@ const CORS_HANDLER = httpAction(async (_, request) => {
   return new Response(null, {
     status: 204,
     headers: {
-      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Origin": getAllowedOrigin(request),
+      "Vary": "Origin",
       "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
       "Access-Control-Max-Age": "86400",
@@ -581,12 +722,14 @@ const CORS_HANDLER = httpAction(async (_, request) => {
 
 for (const path of [
   "/v1/auth/register", "/v1/auth/login", "/v1/auth/refresh",
-  "/v1/auth/profile", "/v1/auth/logout",
+  "/v1/auth/profile", "/v1/auth/logout", "/v1/auth/onboarding/complete", "/v1/auth/clerk-sync",
   "/v1/resumes", "/v1/resumes/upload",
+  "/v1/jobs",
   "/v1/drafts/create",
   "/v1/ats/analyze",
   "/v1/pdf/parse",
   "/v1/ai/generate",
+  "/v1/templates", "/v1/templates/seed",
 ]) {
   http.route({ path, method: "OPTIONS", handler: CORS_HANDLER });
 }

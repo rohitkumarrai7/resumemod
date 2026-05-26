@@ -235,6 +235,7 @@ export const getProfile = query({
       email: user.email,
       name: user.name,
       tier: user.tier,
+      onboardingCompleted: user.onboardingCompleted ?? false,
       usage: {
         analysesThisMonth: user.analysesCount,
         analysesLimit: l.analyses,
@@ -244,6 +245,21 @@ export const getProfile = query({
         draftsLimit: l.drafts,
       },
     };
+  },
+});
+
+export const completeOnboarding = mutation({
+  args: { token: v.string() },
+  handler: async (ctx, args) => {
+    const session = await ctx.db
+      .query("sessions")
+      .withIndex("by_token", (q) => q.eq("token", args.token))
+      .first();
+    if (!session || session.expiresAt < Date.now()) {
+      throw new Error("Unauthorized");
+    }
+    await ctx.db.patch(session.userId, { onboardingCompleted: true });
+    return { ok: true };
   },
 });
 
@@ -258,6 +274,77 @@ export const logout = mutation({
       await ctx.db.delete(session._id);
     }
     return { ok: true };
+  },
+});
+
+export const clerkSync = mutation({
+  args: {
+    syncSecret: v.string(),
+    clerkId: v.string(),
+    email: v.string(),
+    name: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const expected = process.env.CLERK_SYNC_SECRET;
+    if (!expected || args.syncSecret !== expected) {
+      throw new Error("Unauthorized");
+    }
+
+    let user = await ctx.db
+      .query("users")
+      .withIndex("by_clerk", (q) => q.eq("clerkId", args.clerkId))
+      .first();
+
+    if (!user) {
+      const byEmail = await ctx.db
+        .query("users")
+        .withIndex("by_email", (q) => q.eq("email", args.email))
+        .first();
+
+      if (byEmail) {
+        await ctx.db.patch(byEmail._id, {
+          clerkId: args.clerkId,
+          name: byEmail.name || args.name,
+        });
+        user = (await ctx.db.get(byEmail._id))!;
+      } else {
+        const userId = await ctx.db.insert("users", {
+          email: args.email,
+          clerkId: args.clerkId,
+          name: args.name || args.email.split("@")[0],
+          tier: "free",
+          analysesCount: 0,
+          compilationsCount: 0,
+        });
+        user = (await ctx.db.get(userId))!;
+      }
+    }
+
+    const accessToken = generateToken();
+    const refreshToken = generateToken();
+    const expiresAt = Date.now() + 3600 * 1000;
+
+    await ctx.db.insert("sessions", {
+      userId: user._id,
+      token: accessToken,
+      refreshToken,
+      expiresAt,
+    });
+
+    return {
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        tier: user.tier,
+        onboardingCompleted: user.onboardingCompleted ?? false,
+      },
+      tokens: {
+        access: accessToken,
+        refresh: refreshToken,
+        expiresIn: 3600,
+      },
+    };
   },
 });
 

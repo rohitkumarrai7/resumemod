@@ -113,6 +113,14 @@ export function scoreResumeAgainstJD(resumeText: string, jdText: string): {
   matchedKeywords: { keyword: string; frequency: number }[];
   missingKeywords: { keyword: string; importance: string; suggestion: string }[];
   suggestions: { category: string; priority: string; message: string }[];
+  breakdown: {
+    keywordMatch: number;
+    semanticSimilarity: number;
+    sectionCompleteness: number;
+    formatCompatibility: number;
+    impactDensity: number;
+    weights: { keyword: number; semantic: number; section: number; format: number; impact: number };
+  };
 } {
   const resumeClean = preprocess(resumeText);
   const jdClean = preprocess(jdText);
@@ -163,14 +171,14 @@ export function scoreResumeAgainstJD(resumeText: string, jdText: string): {
     suggestions.push({
       category: "skills",
       priority: "high",
-      message: `Add these keywords: ${missing.slice(0, 6).map((m) => m.keyword).join(", ")}`,
+      message: `Add these keywords where truthful: ${missing.slice(0, 6).map((m) => m.keyword).join(", ")}`,
     });
   }
   if (impScore < 0.4) {
     suggestions.push({
       category: "experience",
       priority: "high",
-      message: "Quantify impact in your bullets (e.g., 'reduced latency by 40%')",
+      message: "Quantify impact in your bullets (e.g., 'reduced latency by 40%', 'shipped to 12k users')",
     });
   }
   if (secScore < 0.6) {
@@ -180,6 +188,29 @@ export function scoreResumeAgainstJD(resumeText: string, jdText: string): {
       message: "Add missing sections: summary, skills, or education",
     });
   }
+  if (kwScore > 0.7 && impScore < 0.5) {
+    suggestions.push({
+      category: "evidence",
+      priority: "medium",
+      message: "Good keyword coverage — focus on quantifying achievements with metrics",
+    });
+  }
+  if (matched.length > 0 && missing.length < 5) {
+    suggestions.push({
+      category: "polish",
+      priority: "low",
+      message: "Strong match. Ensure formatting is ATS-friendly: single column, standard headings, no tables",
+    });
+  }
 
-  return { overallScore, matchedKeywords: matched, missingKeywords: missing, suggestions };
+  const breakdown = {
+    keywordMatch: Math.round(kwScore * 100),
+    semanticSimilarity: Math.round(semanticScore * 100),
+    sectionCompleteness: Math.round(secScore * 100),
+    formatCompatibility: Math.round(formatScore * 100),
+    impactDensity: Math.round(impScore * 100),
+    weights: { keyword: 0.30, semantic: 0.25, section: 0.20, format: 0.15, impact: 0.10 },
+  };
+
+  return { overallScore, matchedKeywords: matched, missingKeywords: missing, suggestions, breakdown };
 }
