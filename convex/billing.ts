@@ -40,9 +40,10 @@ export const updateTierFromPayment = mutation({
         .withIndex("by_clerk", (q) => q.eq("clerkId", args.clerkId))
         .first();
     } else if (args.email) {
+      const email = args.email;
       user = await ctx.db
         .query("users")
-        .withIndex("by_email", (q) => q.eq("email", args.email))
+        .withIndex("by_email", (q) => q.eq("email", email))
         .first();
     }
 
